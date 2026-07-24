@@ -18,15 +18,20 @@ franka_groot_e2e/
 ├── run_pipeline.sh      # resumable detached generation → analysis → SFT → eval supervisor
 ├── scripts/
 │   ├── 01_generate/     # Isaac Lab generation and trajectory analysis
-│   ├── 02_convert/      # Isaac output → LeRobot v2.1
-│   ├── 03_sft/          # 8-GPU GR00T SFT and attention visualization
-│   └── 04_arena_eval/   # 8-GPU, 100-episode/task Arena evaluation
+│   └── 02_convert/      # Isaac output → LeRobot v2.1
 └── assets/
     ├── 01_generation/   # two real synthetic episodes
     ├── 02_analysis/     # trajectory, scenario, and failure graphs
     ├── 03_sft_attention/# four final-checkpoint attention maps
     └── 04_arena_eval/   # summary, HTML report, and success/failure videos
 ```
+
+`IsaacLab-Scripts` intentionally owns only data generation, analysis, conversion,
+and orchestration. SFT is executed from
+`Isaac-GR00T:jryu/franka-demo` (`examples/Franka/train_franka.sh`), while
+evaluation is executed from `IsaacLab-Arena:jryu/franka-demo`
+(`isaaclab_arena_gr00t/parallel_evaluation.py`). Do not copy those implementation
+files into this repository; each fork branch is its own source of truth.
 
 The bundled assets are compact evidence from completed runs, not mockups:
 
@@ -102,7 +107,7 @@ git clone --branch main --single-branch \
   https://github.com/jihyeonRyu/IsaacLab-Scripts.git
 ```
 
-Verified revisions: GR00T `d6ee11a`, Arena `6bceff7`, and this E2E package from the Scripts `main` branch.
+Verified revisions: GR00T `d6ee11a`, Arena `bce7462`, and this E2E package from the Scripts `main` branch.
 
 ### 0.1 Install the uv bootstrap
 
@@ -424,7 +429,7 @@ cd /workspace/Isaac-GR00T
 source .venv/bin/activate
 wandb login
 
-bash /workspace/IsaacLab-Scripts/franka_groot_e2e/scripts/03_sft/train_franka.sh
+bash /workspace/Isaac-GR00T/examples/Franka/train_franka.sh
 ```
 
 The current defaults are the reproducible full-run settings:
@@ -490,7 +495,7 @@ Run the 100-episode-per-task evaluation (300 episodes total):
 cd /workspace/IsaacLab-Arena
 source .venv/bin/activate
 
-python /workspace/IsaacLab-Scripts/franka_groot_e2e/scripts/04_arena_eval/parallel_evaluation.py \
+python /workspace/IsaacLab-Arena/isaaclab_arena_gr00t/parallel_evaluation.py \
   --checkpoint /workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-sft-crop098-aug-v2/checkpoint-10000 \
   --num-gpus 8 \
   --episodes-per-task 100 \

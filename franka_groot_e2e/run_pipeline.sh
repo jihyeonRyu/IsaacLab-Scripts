@@ -7,6 +7,8 @@ LEROBOT_DATASET="${LEROBOT_DATASET:-/workspace/datasets/franka_posture_recovery_
 GROOT_REPO="${GROOT_REPO:-/workspace/Isaac-GR00T}"
 ARENA_REPO="${ARENA_REPO:-/workspace/IsaacLab-Arena}"
 SCRIPTS_REPO="${SCRIPTS_REPO:-/workspace/IsaacLab-Scripts}"
+GROOT_BRANCH="${GROOT_BRANCH:-jryu/franka-demo}"
+ARENA_BRANCH="${ARENA_BRANCH:-jryu/franka-demo}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-franka-blue-cube-sft-fixedtray-recovery-v3}"
 CHECKPOINT="${CHECKPOINT:-${GROOT_REPO}/outputs/franka-groot-sft/${EXPERIMENT_NAME}/checkpoint-10000}"
 EVAL_OUTPUT="${EVAL_OUTPUT:-${ARENA_REPO}/outputs/franka-gr00t-parallel/fixedtray-recovery-v3-8gpu-100eps}"
@@ -25,6 +27,17 @@ status() {
     printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "${STATE_DIR}/status.log"
 }
 
+require_branch() {
+    local repo_path=$1
+    local expected_branch=$2
+    local actual_branch
+    actual_branch="$(git -C "${repo_path}" branch --show-current)"
+    if [ "${actual_branch}" != "${expected_branch}" ]; then
+        echo "Expected ${repo_path} on branch ${expected_branch}, found ${actual_branch:-detached HEAD}" >&2
+        exit 2
+    fi
+}
+
 mark_done() {
     printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${STATE_DIR}/$1.done"
 }
@@ -41,6 +54,9 @@ export ACCEPT_EULA="${ACCEPT_EULA:-Y}"
 export PRIVACY_CONSENT="${PRIVACY_CONSENT:-Y}"
 export LD_LIBRARY_PATH="/workspace/.tools/isaac-system-libs/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export PYTHONUNBUFFERED=1
+
+require_branch "${GROOT_REPO}" "${GROOT_BRANCH}"
+require_branch "${ARENA_REPO}" "${ARENA_BRANCH}"
 
 CURRENT_STAGE="generation"
 if [ ! -f "${STATE_DIR}/generation.done" ]; then
@@ -106,7 +122,7 @@ if [ ! -f "${STATE_DIR}/sft.done" ]; then
     SAVE_STEPS=250 \
     WANDB_MODE=online \
     DEBUG_VISUALIZE=1 \
-    bash "${SCRIPTS_REPO}/franka_groot_e2e/scripts/03_sft/train_franka.sh"
+    bash "${GROOT_REPO}/examples/Franka/train_franka.sh"
     test -f "${CHECKPOINT}/config.json"
     mark_done sft
 fi
