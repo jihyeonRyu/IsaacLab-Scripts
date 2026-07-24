@@ -340,7 +340,7 @@ def add_args() -> argparse.ArgumentParser:
     parser.add_argument(
         "--solver_recovery_max_attempts",
         type=int,
-        default=2,
+        default=3,
         help="Maximum safe-raise/recenter retries per cube after IK motion stalls.",
     )
     parser.add_argument(
@@ -1036,6 +1036,11 @@ def jitter_color(rng: np.random.Generator, base: Color, amount: float = 0.08) ->
     return tuple(np.clip(color, 0.0, 1.0).round(4).tolist())  # type: ignore[return-value]
 
 
+def sample_uniform_rgb(rng: np.random.Generator) -> Color:
+    """Sample every background RGB channel independently over the full range."""
+    return tuple(rng.uniform(0.0, 1.0, size=3).round(4).tolist())  # type: ignore[return-value]
+
+
 def sample_cuboid_size(rng: np.random.Generator) -> Vec3:
     """Sample XYZ dimensions while keeping the object inside Franka finger reach."""
     if not args_cli.domain_randomization:
@@ -1332,16 +1337,6 @@ def _generate_blue_tray_scenario_once(
 
     tray_palette: list[Color] = [(0.1, 0.55, 0.22), (0.95, 0.78, 0.18), (0.28, 0.28, 0.3)]
     table_palette: list[Color] = [(0.55, 0.47, 0.37), (0.72, 0.72, 0.68), (0.38, 0.42, 0.44)]
-    background_palette: list[Color] = [
-        (0.04, 0.06, 0.10),  # dark navy
-        (0.12, 0.20, 0.36),  # steel blue
-        (0.38, 0.24, 0.12),  # warm brown
-        (0.18, 0.30, 0.22),  # sage green
-        (0.30, 0.18, 0.38),  # muted purple
-        (0.32, 0.33, 0.36),  # neutral gray
-        (0.48, 0.40, 0.28),  # warm beige
-        (0.10, 0.32, 0.34),  # teal
-    ]
     if args_cli.domain_randomization:
         blue_color = jitter_color(rng, (0.03, 0.16, 0.95), 0.04)
         red_color = jitter_color(rng, (0.95, 0.04, 0.03), 0.04)
@@ -1457,8 +1452,9 @@ def _generate_blue_tray_scenario_once(
         camera_eye = tuple((np.asarray(FIXED_CAMERA_EYE) + eye_jitter).tolist())
         camera_target = tuple((np.asarray(FIXED_CAMERA_TARGET) + target_jitter).tolist())
     if args_cli.domain_randomization:
-        background_base = background_palette[int(rng.integers(0, len(background_palette)))]
-        background_color = jitter_color(rng, background_base, 0.06)
+        # Use the complete RGB cube instead of a small muted palette. The dome
+        # remains near-neutral, so backdrop diversity does not darken the task.
+        background_color = sample_uniform_rgb(rng)
     else:
         background_color = (0.10, 0.12, 0.15)
     lights = generate_episode_lights(rng, light_intensity, light_color, background_color)

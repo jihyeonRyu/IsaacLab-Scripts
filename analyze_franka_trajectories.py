@@ -9,12 +9,13 @@ Example:
 
 The script reads ``logs/states.jsonl`` (measured ``ee_pos_env``), not integrated
 actions. It writes overall and per-scenario trajectory figures plus episode- and
-scenario-level CSV/JSON statistics.
+scenario-level CSV/JSON statistics plus failure-cause diagnostics.
 """
 
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import csv
 from dataclasses import dataclass
 import json
@@ -45,6 +46,10 @@ class EpisodeTrajectory:
     recovery_augmented: bool
     recovery_completed: bool
     solver_recovery_attempts: int
+    solver_recovery_total_attempts: int
+    failure_reason: str | None
+    failed_state: str | None
+    slot_index: int
     positions: np.ndarray
     sim_times: np.ndarray
 
@@ -127,6 +132,41 @@ def load_states(path: Path) -> tuple[np.ndarray, np.ndarray]:
     return np.asarray(positions, dtype=np.float64), np.asarray(sim_times, dtype=np.float64)
 
 
+def load_automation_details(
+    path: Path, failed: bool
+) -> tuple[str | None, str | None, int]:
+    if not path.is_file():
+        return ("unknown", "unknown", 0) if failed else (None, None, 0)
+
+    sequence_failed: dict[str, Any] | None = None
+    total_solver_attempts = 0
+    with path.open("r", encoding="utf-8") as stream:
+        for line_number, line in enumerate(stream, start=1):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{path}:{line_number}: {exc}") from exc
+            if event.get("event") == "solver_recovery_started":
+                total_solver_attempts += 1
+            elif event.get("event") == "sequence_failed":
+                sequence_failed = event
+    if not failed:
+        return None, None, total_solver_attempts
+    if sequence_failed is None:
+        return "unknown", "unknown", total_solver_attempts
+
+    reason = str(sequence_failed.get("reason") or "unknown")
+    failed_state = sequence_failed.get("failed_state")
+    if not failed_state:
+        failed_state = {
+            "grasp_verification": "verify_grasp",
+            "placement_verification": "retreat",
+        }.get(reason, "unknown")
+    return reason, str(failed_state), total_solver_attempts
+
+
 def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
     logs_dir = episode_dir / "logs"
     scenario_wrapper = read_json(logs_dir / "scenario.json")
@@ -141,6 +181,9 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
     positions, sim_times = load_states(logs_dir / "states.jsonl")
     completed = bool(result.get("completed"))
     failed = bool(result.get("failed"))
+    failure_reason, failed_state, total_solver_attempts = load_automation_details(
+        logs_dir / "automation_events.jsonl", failed
+    )
     return EpisodeTrajectory(
         episode_id=episode_dir.relative_to(input_root).as_posix(),
         episode_dir=episode_dir,
@@ -155,6 +198,10 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
         recovery_augmented=bool(result.get("recovery_augmented")),
         recovery_completed=bool(result.get("recovery_completed")),
         solver_recovery_attempts=int(result.get("solver_recovery_attempts", 0)),
+        solver_recovery_total_attempts=total_solver_attempts,
+        failure_reason=failure_reason,
+        failed_state=failed_state,
+        slot_index=int(result.get("slot_index", 0)),
         positions=positions,
         sim_times=sim_times,
     )
@@ -186,6 +233,10 @@ def trajectory_metrics(episode: EpisodeTrajectory) -> dict[str, Any]:
         "recovery_augmented": episode.recovery_augmented,
         "recovery_completed": episode.recovery_completed,
         "solver_recovery_attempts": episode.solver_recovery_attempts,
+        "solver_recovery_total_attempts": episode.solver_recovery_total_attempts,
+        "failure_reason": episode.failure_reason or "",
+        "failed_state": episode.failed_state or "",
+        "slot_index": episode.slot_index,
         "frames": int(len(positions)),
         "duration_s": duration,
         "path_length_m": path_length,
@@ -254,6 +305,85 @@ def aggregate_metrics(
             }
         )
     return scenario_rows
+
+
+def aggregate_failure_analysis(
+    episodes: list[EpisodeTrajectory],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    failed_episodes = [episode for episode in episodes if episode.failed]
+    total_failures = len(failed_episodes)
+
+    reason_counts = Counter(
+        episode.failure_reason or "unknown" for episode in failed_episodes
+    )
+    state_counts = Counter(
+        episode.failed_state or "unknown" for episode in failed_episodes
+    )
+
+    def count_rows(counter: Counter[str], label_key: str) -> list[dict[str, Any]]:
+        return [
+            {
+                label_key: label,
+                "count": count,
+                "pct_of_failures": (
+                    100.0 * count / total_failures if total_failures else 0.0
+                ),
+            }
+            for label, count in counter.most_common()
+        ]
+
+    failure_rows = [
+        {
+            "episode_id": episode.episode_id,
+            "blue_cube_count": episode.blue_cube_count,
+            "failure_reason": episode.failure_reason or "unknown",
+            "failed_state": episode.failed_state or "unknown",
+            "solver_recovery_attempts": episode.solver_recovery_attempts,
+            "solver_recovery_total_attempts": episode.solver_recovery_total_attempts,
+            "slot_index": episode.slot_index,
+        }
+        for episode in failed_episodes
+    ]
+
+    attempts_grouped: dict[int, list[EpisodeTrajectory]] = {}
+    for episode in episodes:
+        attempts_grouped.setdefault(
+            episode.solver_recovery_total_attempts, []
+        ).append(episode)
+    solver_rows: list[dict[str, Any]] = []
+    for attempts, group in sorted(attempts_grouped.items()):
+        successful = sum(episode.successful for episode in group)
+        solver_rows.append(
+            {
+                "solver_recovery_total_attempts": attempts,
+                "episodes": len(group),
+                "successful_episodes": successful,
+                "failed_episodes": len(group) - successful,
+                "success_rate_pct": 100.0 * successful / len(group),
+            }
+        )
+
+    by_scenario = Counter(
+        (episode.blue_cube_count, episode.failed_state or "unknown")
+        for episode in failed_episodes
+    )
+    state_by_scenario_rows = [
+        {
+            "blue_cube_count": blue_cube_count,
+            "failed_state": failed_state,
+            "count": count,
+        }
+        for (blue_cube_count, failed_state), count in sorted(by_scenario.items())
+    ]
+
+    analysis = {
+        "total_failures": total_failures,
+        "failure_reason_counts": count_rows(reason_counts, "failure_reason"),
+        "failed_state_counts": count_rows(state_counts, "failed_state"),
+        "solver_recovery_outcomes": solver_rows,
+        "failed_states_by_blue_cube_count": state_by_scenario_rows,
+    }
+    return analysis, failure_rows, solver_rows
 
 
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
@@ -437,6 +567,124 @@ def plot_scenario_statistics(
     plt.close(figure)
 
 
+def plot_failure_analysis(
+    failure_analysis: dict[str, Any],
+    output_path: Path,
+    dpi: int,
+) -> None:
+    figure, axes = plt.subplots(2, 2, figsize=(15, 10), constrained_layout=True)
+
+    def horizontal_counts(
+        axis: Any,
+        rows: list[dict[str, Any]],
+        label_key: str,
+        title: str,
+        color: str,
+    ) -> None:
+        labels = [str(row[label_key]) for row in rows]
+        counts = np.asarray([int(row["count"]) for row in rows])
+        if not labels:
+            axis.text(0.5, 0.5, "No failures", ha="center", va="center")
+            axis.set_axis_off()
+            return
+        y_values = np.arange(len(labels))
+        axis.barh(y_values, counts, color=color)
+        axis.set_yticks(y_values, labels)
+        axis.invert_yaxis()
+        axis.set_xlabel("Failed episodes")
+        axis.set_title(title)
+        axis.grid(True, axis="x", alpha=0.25)
+        for y_value, count in zip(y_values, counts):
+            axis.text(count + max(counts) * 0.015, y_value, str(count), va="center")
+
+    horizontal_counts(
+        axes[0, 0],
+        failure_analysis["failure_reason_counts"],
+        "failure_reason",
+        "Terminal failure reasons",
+        "#c94c4c",
+    )
+    horizontal_counts(
+        axes[0, 1],
+        failure_analysis["failed_state_counts"],
+        "failed_state",
+        "FSM states where failure occurred",
+        "#d1843c",
+    )
+
+    solver_rows = failure_analysis["solver_recovery_outcomes"]
+    attempt_labels = [str(row["solver_recovery_total_attempts"]) for row in solver_rows]
+    attempt_x = np.arange(len(attempt_labels))
+    successes = np.asarray([row["successful_episodes"] for row in solver_rows])
+    failures = np.asarray([row["failed_episodes"] for row in solver_rows])
+    axes[1, 0].bar(attempt_x, successes, label="success", color="#3a9d5d")
+    axes[1, 0].bar(
+        attempt_x, failures, bottom=successes, label="failed", color="#d9534f"
+    )
+    axes[1, 0].set_xticks(attempt_x, attempt_labels)
+    axes[1, 0].set_xlabel("Total solver recovery attempts in episode")
+    axes[1, 0].set_ylabel("Episodes")
+    axes[1, 0].set_title("Outcome by solver-recovery usage")
+    axes[1, 0].legend()
+    axes[1, 0].grid(True, axis="y", alpha=0.25)
+    for index, row in enumerate(solver_rows):
+        axes[1, 0].text(
+            index,
+            row["episodes"] + max(1, max(successes + failures)) * 0.015,
+            f"{row['success_rate_pct']:.1f}%",
+            ha="center",
+            fontsize=9,
+        )
+
+    scenario_rows = failure_analysis["failed_states_by_blue_cube_count"]
+    cube_counts = sorted({int(row["blue_cube_count"]) for row in scenario_rows})
+    failed_states = [
+        row["failed_state"] for row in failure_analysis["failed_state_counts"]
+    ]
+    scenario_x = np.arange(len(cube_counts))
+    bottoms = np.zeros(len(cube_counts), dtype=np.int64)
+    palette = plt.get_cmap("tab10")
+    for state_index, failed_state in enumerate(failed_states):
+        values = np.asarray(
+            [
+                next(
+                    (
+                        int(row["count"])
+                        for row in scenario_rows
+                        if int(row["blue_cube_count"]) == cube_count
+                        and row["failed_state"] == failed_state
+                    ),
+                    0,
+                )
+                for cube_count in cube_counts
+            ]
+        )
+        if not values.any():
+            continue
+        axes[1, 1].bar(
+            scenario_x,
+            values,
+            bottom=bottoms,
+            label=failed_state,
+            color=palette(state_index % 10),
+        )
+        bottoms += values
+    axes[1, 1].set_xticks(scenario_x, [str(count) for count in cube_counts])
+    axes[1, 1].set_xlabel("Number of blue cubes")
+    axes[1, 1].set_ylabel("Failed episodes")
+    axes[1, 1].set_title("Failure states by scenario")
+    axes[1, 1].grid(True, axis="y", alpha=0.25)
+    if failed_states:
+        axes[1, 1].legend(fontsize=8, ncol=2)
+
+    figure.suptitle(
+        f"Failure-cause analysis — {failure_analysis['total_failures']} failed episodes",
+        fontsize=15,
+    )
+    figure.savefig(output_path, dpi=dpi)
+    plt.close(figure)
+
+
 def main() -> None:
     args = parse_args()
     input_root = args.input_root.resolve()
@@ -475,8 +723,11 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     episode_rows = [trajectory_metrics(episode) for episode in episodes]
     scenario_rows = aggregate_metrics(episodes, episode_rows)
+    failure_analysis, failure_rows, solver_rows = aggregate_failure_analysis(episodes)
     write_csv(output_dir / "episode_metrics.csv", episode_rows)
     write_csv(output_dir / "scenario_success.csv", scenario_rows)
+    write_csv(output_dir / "failure_causes.csv", failure_rows)
+    write_csv(output_dir / "solver_recovery_outcomes.csv", solver_rows)
 
     total_success = sum(episode.successful for episode in episodes)
     summary = {
@@ -488,17 +739,25 @@ def main() -> None:
         "success_rate_pct": 100.0 * total_success / len(episodes),
         "blue_cube_counts": sorted({episode.blue_cube_count for episode in episodes}),
         "scenario_statistics": scenario_rows,
+        "failure_analysis": failure_analysis,
         "skipped_episodes": skipped,
         "outputs": {
             "trajectory_distribution": "trajectory_distribution.png",
             "trajectory_by_blue_cube_count": "trajectory_by_blue_cube_count.png",
             "scenario_statistics": "scenario_statistics.png",
+            "failure_analysis": "failure_analysis.png",
+            "failure_analysis_json": "failure_analysis.json",
             "episode_metrics": "episode_metrics.csv",
             "scenario_success": "scenario_success.csv",
+            "failure_causes": "failure_causes.csv",
+            "solver_recovery_outcomes": "solver_recovery_outcomes.csv",
         },
     }
     with (output_dir / "scenario_summary.json").open("w", encoding="utf-8") as stream:
         json.dump(summary, stream, indent=2, ensure_ascii=False)
+        stream.write("\n")
+    with (output_dir / "failure_analysis.json").open("w", encoding="utf-8") as stream:
+        json.dump(failure_analysis, stream, indent=2, ensure_ascii=False)
         stream.write("\n")
 
     plot_overall(
@@ -518,6 +777,11 @@ def main() -> None:
         output_dir / "scenario_statistics.png",
         args.dpi,
     )
+    plot_failure_analysis(
+        failure_analysis,
+        output_dir / "failure_analysis.png",
+        args.dpi,
+    )
 
     print(
         f"Analyzed {len(episodes)} episodes: "
@@ -529,6 +793,11 @@ def main() -> None:
             f"n={row['episodes']}, "
             f"success={row['successful_episodes']}/{row['episodes']} "
             f"({row['success_rate_pct']:.1f}%)"
+        )
+    for row in failure_analysis["failure_reason_counts"]:
+        print(
+            f"  failure_reason={row['failure_reason']}: "
+            f"n={row['count']} ({row['pct_of_failures']:.1f}% of failures)"
         )
     print(f"Outputs: {output_dir}")
 
