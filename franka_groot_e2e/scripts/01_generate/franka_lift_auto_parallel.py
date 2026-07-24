@@ -375,6 +375,24 @@ def add_args() -> argparse.ArgumentParser:
         metavar=("X", "Y", "Z"),
         help="High, robot-front EEF pose used to escape a poor differential-IK joint configuration.",
     )
+    parser.add_argument(
+        "--solver_recovery_reorient_step",
+        type=float,
+        default=0.12,
+        help="Maximum raw axis-angle step used to restore the validated tool orientation at the recovery center.",
+    )
+    parser.add_argument(
+        "--solver_recovery_reorient_tolerance",
+        type=float,
+        default=0.035,
+        help="Angular tolerance in radians for completing solver-recovery tool reorientation.",
+    )
+    parser.add_argument(
+        "--solver_recovery_reorient_max_steps",
+        type=int,
+        default=480,
+        help="Maximum control steps spent on optional tool reorientation before a safe partial recovery.",
+    )
     parser.add_argument("--grasp_min_width", type=float, default=0.012)
     parser.add_argument("--grasp_min_lift", type=float, default=0.025)
     parser.add_argument("--domain_randomization", action="store_true", default=True)
@@ -694,6 +712,15 @@ if args_cli.solver_recovery_yaw_progress_epsilon <= 0.0:
     parser.error("--solver_recovery_yaw_progress_epsilon must be > 0.")
 if args_cli.solver_recovery_raise_clearance <= 0.0:
     parser.error("--solver_recovery_raise_clearance must be > 0.")
+if args_cli.solver_recovery_reorient_step <= 0.0:
+    parser.error("--solver_recovery_reorient_step must be > 0.")
+if not 0.0 < args_cli.solver_recovery_reorient_tolerance <= args_cli.solver_recovery_reorient_step:
+    parser.error(
+        "--solver_recovery_reorient_tolerance must be > 0 and <= "
+        "--solver_recovery_reorient_step."
+    )
+if args_cli.solver_recovery_reorient_max_steps < 1:
+    parser.error("--solver_recovery_reorient_max_steps must be >= 1.")
 solver_center_x, solver_center_y, solver_center_z = map(float, args_cli.solver_recovery_center)
 if not (
     float(args_cli.workspace_x_min) <= solver_center_x <= float(args_cli.workspace_x_max)
@@ -755,7 +782,7 @@ from isaaclab.assets import RigidObjectCfg
 from isaaclab.managers import EventTermCfg as EventTerm, SceneEntityCfg
 import isaaclab.envs.mdp as event_mdp
 from isaaclab.sensors import CameraCfg
-from isaaclab.utils.math import quat_apply
+from isaaclab.utils.math import compute_pose_error, quat_apply
 from isaaclab_tasks.utils import parse_env_cfg
 from pxr import Gf, Sdf, Semantics, UsdGeom, UsdLux
 
@@ -2627,6 +2654,7 @@ class AutoPickPlaceController:
         self.solver_recovery_return_state: str | None = None
         self.solver_recovery_raise_target: torch.Tensor | None = None
         self.solver_recovery_center_target: torch.Tensor | None = None
+        self.solver_recovery_reference_quat: torch.Tensor | None = None
         self.best_position_distance = math.inf
         self.steps_without_motion_progress = 0
         self.events: list[dict[str, Any]] = []
@@ -2670,11 +2698,22 @@ class AutoPickPlaceController:
         self.active, self.completed, self.failed = True, False, False
         self.processed.clear()
         self.slot_index = self.retry_count = 0
+        _, reference_quat = read_ee_pose_env(env, self.env_id)
+        self.solver_recovery_reference_quat = reference_quat.detach().clone()
+        reference_tilt = tool_down_tilt_deg_xyzw(reference_quat)
+        if reference_tilt > float(args_cli.start_pose_max_tilt_deg):
+            raise RuntimeError(
+                f"env {self.env_id} solver-recovery reference tool tilt "
+                f"{reference_tilt:.2f} deg exceeds the floor-facing limit "
+                f"{float(args_cli.start_pose_max_tilt_deg):.2f} deg"
+            )
         self._event(
             "sequence_started",
             placement_positions=self.scenario.placement_positions,
             start_ee_target=self.scenario.start_ee_target,
             start_ee_actual=self.scenario.start_ee_actual,
+            solver_recovery_reference_quat=tensor_to_numpy(reference_quat).tolist(),
+            solver_recovery_reference_tilt_deg=reference_tilt,
         )
         return self._select_next(env)
 
@@ -2755,6 +2794,47 @@ class AutoPickPlaceController:
         action[:, 0:3] = step.unsqueeze(0)
         return False
 
+    def _orientation_action(
+        self,
+        action: torch.Tensor,
+        ee_pos: torch.Tensor,
+        ee_quat: torch.Tensor,
+        target_quat: torch.Tensor,
+        hold_position: torch.Tensor,
+    ) -> tuple[bool, float]:
+        """Rotate along the shortest quaternion arc while holding a fixed EEF position."""
+        # q and -q describe the same orientation. Canonicalize the target into
+        # the current quaternion hemisphere before converting the error to an
+        # axis-angle command; otherwise compute_pose_error may request the long
+        # (~2*pi) arc after the sign boundary is crossed.
+        if float(torch.dot(ee_quat, target_quat).item()) < 0.0:
+            target_quat = -target_quat
+        _, axis_angle_error = compute_pose_error(
+            ee_pos.unsqueeze(0),
+            ee_quat.unsqueeze(0),
+            ee_pos.unsqueeze(0),
+            target_quat.unsqueeze(0),
+            rot_error_type="axis_angle",
+        )
+        error = axis_angle_error[0]
+        angular_error = float(torch.linalg.norm(error).item())
+        self._track_motion_progress(
+            angular_error, float(args_cli.solver_recovery_yaw_progress_epsilon)
+        )
+        action[:, 0:6] = 0.0
+        position_error = hold_position - ee_pos
+        position_distance = float(torch.linalg.norm(position_error).item())
+        position_step = float(args_cli.auto_pick_step)
+        if position_distance > position_step:
+            position_error = position_error / position_distance * position_step
+        action[:, 0:3] = position_error.unsqueeze(0)
+        if angular_error <= float(args_cli.solver_recovery_reorient_tolerance):
+            return True, angular_error
+        max_step = float(args_cli.solver_recovery_reorient_step)
+        step = error if angular_error <= max_step else error / angular_error * max_step
+        action[:, 3:6] = step.unsqueeze(0)
+        return False, angular_error
+
     def _placement_slot(self, env) -> torch.Tensor:
         """Return the current slot with the selected cuboid resting on the tray floor."""
         assert self.scenario is not None and self.current_spec is not None
@@ -2828,7 +2908,7 @@ class AutoPickPlaceController:
             recovery_mode=(
                 "raise_only"
                 if self.solver_recovery_holding
-                else "raise_and_recenter"
+                else "raise_recenter_reorient"
             ),
             return_state=self.solver_recovery_return_state,
         )
@@ -2902,14 +2982,59 @@ class AutoPickPlaceController:
                 else args_cli.gripper_open_command
             )
             if reached:
+                self._transition("solver_recovery_reorient")
+        elif self.state == "solver_recovery_reorient":
+            assert self.solver_recovery_reference_quat is not None
+            assert self.solver_recovery_center_target is not None
+            reached, angular_error = self._orientation_action(
+                action,
+                ee_pos,
+                ee_quat,
+                self.solver_recovery_reference_quat,
+                self.solver_recovery_center_target,
+            )
+            action[:, 6] = args_cli.gripper_open_command
+            if reached:
                 return_state = self.solver_recovery_return_state or "open"
+                final_tilt = tool_down_tilt_deg_xyzw(ee_quat)
+                self._event(
+                    "solver_recovery_reoriented",
+                    angular_error=angular_error,
+                    tool_down_tilt_deg=final_tilt,
+                    reference_quat=tensor_to_numpy(
+                        self.solver_recovery_reference_quat
+                    ).tolist(),
+                )
                 self._event(
                     "solver_recovery_completed", return_state=return_state,
                     attempt=self.solver_recovery_attempts,
-                    recovery_mode="raise_and_recenter",
+                    recovery_mode="raise_recenter_reorient",
                 )
                 self.solver_recovery_holding = False
                 self._transition(return_state)
+            elif (
+                self.steps_without_motion_progress
+                >= int(args_cli.solver_recovery_stall_steps)
+                or self.state_steps
+                >= int(args_cli.solver_recovery_reorient_max_steps)
+            ):
+                final_tilt = tool_down_tilt_deg_xyzw(ee_quat)
+                if final_tilt <= float(args_cli.start_pose_max_tilt_deg):
+                    return_state = self.solver_recovery_return_state or "open"
+                    self._event(
+                        "solver_recovery_reorient_partial",
+                        angular_error=angular_error,
+                        tool_down_tilt_deg=final_tilt,
+                        reason="orientation_stall_with_safe_floor_facing_tool",
+                    )
+                    self._event(
+                        "solver_recovery_completed",
+                        return_state=return_state,
+                        attempt=self.solver_recovery_attempts,
+                        recovery_mode="raise_recenter_reorient_partial",
+                    )
+                    self.solver_recovery_holding = False
+                    self._transition(return_state)
         elif self.state == "open":
             if self.state_steps >= hold:
                 next_state = (
