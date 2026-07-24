@@ -291,9 +291,15 @@ def add_args() -> argparse.ArgumentParser:
             "The pre-roll translates only, preserving the validated floor-facing tool orientation."
         ),
     )
-    parser.add_argument("--start_ee_x_range", type=float, nargs=2, default=(0.33, 0.70), metavar=("MIN", "MAX"))
+    parser.add_argument("--start_ee_x_range", type=float, nargs=2, default=(0.36, 0.70), metavar=("MIN", "MAX"))
     parser.add_argument("--start_ee_y_range", type=float, nargs=2, default=(-0.34, 0.34), metavar=("MIN", "MAX"))
     parser.add_argument("--start_ee_z_range", type=float, nargs=2, default=(0.25, 0.55), metavar=("MIN", "MAX"))
+    parser.add_argument(
+        "--start_ee_radius_min",
+        type=float,
+        default=0.40,
+        help="Minimum XY radius that keeps randomized starts away from the robot-base singular region.",
+    )
     parser.add_argument(
         "--start_ee_radius_max",
         type=float,
@@ -617,8 +623,11 @@ if args_cli.workspace_x_max <= args_cli.workspace_x_min or args_cli.workspace_y_
     parser.error("workspace max bounds must be greater than min bounds.")
 if args_cli.workspace_radius_max <= 0:
     parser.error("--workspace_radius_max must be > 0.")
-if args_cli.start_ee_radius_max <= 0:
-    parser.error("--start_ee_radius_max must be > 0.")
+if (
+    args_cli.start_ee_radius_min <= 0
+    or args_cli.start_ee_radius_max < args_cli.start_ee_radius_min
+):
+    parser.error("start EEF radii must satisfy 0 < MIN <= MAX.")
 if args_cli.cube_size <= 0:
     parser.error("--cube_size must be > 0.")
 if args_cli.cube_size_range[0] <= 0 or args_cli.cube_size_range[1] < args_cli.cube_size_range[0]:
@@ -1048,7 +1057,12 @@ def sample_start_ee_target(rng: np.random.Generator) -> Vec3 | None:
     bounds = (args_cli.start_ee_x_range, args_cli.start_ee_y_range, args_cli.start_ee_z_range)
     for _ in range(256):
         target = tuple(float(rng.uniform(*axis_bounds)) for axis_bounds in bounds)
-        if math.hypot(target[0], target[1]) <= float(args_cli.start_ee_radius_max):
+        radius = math.hypot(target[0], target[1])
+        if (
+            float(args_cli.start_ee_radius_min)
+            <= radius
+            <= float(args_cli.start_ee_radius_max)
+        ):
             return tuple(round(value, 6) for value in target)  # type: ignore[return-value]
     raise RuntimeError("failed to sample a reachable randomized start EEF target")
 
