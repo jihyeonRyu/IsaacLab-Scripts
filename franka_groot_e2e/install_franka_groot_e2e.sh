@@ -63,6 +63,13 @@ need_value() {
     fi
 }
 
+normalize_executable_path() {
+    local executable_path=$1
+    local executable_dir
+    executable_dir="$(realpath -m -- "$(dirname -- "${executable_path}")")"
+    printf '%s/%s\n' "${executable_dir}" "$(basename -- "${executable_path}")"
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --workspace-root)
@@ -155,7 +162,7 @@ ARENA_REPO="$(realpath -m -- "${ARENA_REPO:-${WORKSPACE_ROOT}/IsaacLab-Arena}")"
 MODELS_ROOT="$(realpath -m -- "${MODELS_ROOT:-${WORKSPACE_ROOT}/models}")"
 ISAAC_VENV="$(realpath -m -- "${ISAAC_VENV:-${WORKSPACE_ROOT}/env_isaaclab}")"
 UV_VENV="$(realpath -m -- "${UV_VENV:-${WORKSPACE_ROOT}/.uv-bootstrap}")"
-PYTHON_BIN="$(realpath -m -- "${PYTHON_BIN}")"
+PYTHON_BIN="$(normalize_executable_path "${PYTHON_BIN}")"
 BASE_MODEL_PATH="${MODELS_ROOT}/GR00T-N1.7-3B"
 COSMOS_MODEL_PATH="${MODELS_ROOT}/Cosmos-Reason2-2B"
 HF_HOME="${MODELS_ROOT}/huggingface-cache"

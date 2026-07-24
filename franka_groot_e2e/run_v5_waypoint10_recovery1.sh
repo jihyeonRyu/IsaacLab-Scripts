@@ -80,6 +80,13 @@ need_value() {
     fi
 }
 
+normalize_executable_path() {
+    local executable_path=$1
+    local executable_dir
+    executable_dir="$(realpath -m -- "$(dirname -- "${executable_path}")")"
+    printf '%s/%s\n' "${executable_dir}" "$(basename -- "${executable_path}")"
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --workspace-root) need_value "$@"; WORKSPACE_ROOT=$2; shift 2 ;;
@@ -126,9 +133,9 @@ MODELS_ROOT="$(realpath -m -- "${MODELS_ROOT:-${WORKSPACE_ROOT}/models}")"
 BASE_MODEL_PATH="$(realpath -m -- "${BASE_MODEL_PATH:-${MODELS_ROOT}/GR00T-N1.7-3B}")"
 GROOT_COSMOS_MODEL_PATH="$(realpath -m -- "${GROOT_COSMOS_MODEL_PATH:-${MODELS_ROOT}/Cosmos-Reason2-2B}")"
 HF_HOME="$(realpath -m -- "${HF_HOME:-${MODELS_ROOT}/huggingface-cache}")"
-ISAAC_PYTHON="$(realpath -m -- "${ISAAC_PYTHON:-${WORKSPACE_ROOT}/env_isaaclab/bin/python}")"
-ARENA_PYTHON="$(realpath -m -- "${ARENA_PYTHON:-${ISAAC_PYTHON}}")"
-GROOT_PYTHON="$(realpath -m -- "${GROOT_PYTHON:-${GROOT_REPO}/.venv/bin/python}")"
+ISAAC_PYTHON="$(normalize_executable_path "${ISAAC_PYTHON:-${WORKSPACE_ROOT}/env_isaaclab/bin/python}")"
+ARENA_PYTHON="$(normalize_executable_path "${ARENA_PYTHON:-${ISAAC_PYTHON}}")"
+GROOT_PYTHON="$(normalize_executable_path "${GROOT_PYTHON:-${GROOT_REPO}/.venv/bin/python}")"
 RAW_DATASET="$(realpath -m -- "${RAW_DATASET:-${WORKSPACE_ROOT}/output/franka_waypoint10_recovery1_600eps_seed${GENERATION_SEED}_v5}")"
 LEROBOT_DATASET="$(realpath -m -- "${LEROBOT_DATASET:-${WORKSPACE_ROOT}/datasets/franka_waypoint10_recovery1_seed${GENERATION_SEED}_v5_lerobot}")"
 CHECKPOINT="$(realpath -m -- "${CHECKPOINT:-${GROOT_REPO}/outputs/franka-groot-sft/${EXPERIMENT_NAME}/checkpoint-10000}")"
