@@ -137,6 +137,12 @@ def add_args() -> argparse.ArgumentParser:
     )
     parser.add_argument("--seed", type=int, default=7, help="Random seed for scenario generation.")
     parser.add_argument("--episode_index", type=int, default=0, help="Seed offset for generating another random scene.")
+    parser.add_argument(
+        "--validate_layouts_only",
+        type=int,
+        default=0,
+        help="Generate and validate this many fixed-tray vector layouts, then exit before simulation.",
+    )
     parser.add_argument("--min_blue_cubes", type=int, default=1)
     parser.add_argument("--max_blue_cubes", type=int, default=3)
     parser.add_argument("--min_red_cubes", type=int, default=2)
@@ -662,6 +668,8 @@ if args_cli.tray_size[0] <= 0 or args_cli.tray_size[1] <= 0:
     parser.error("--tray_size values must be > 0.")
 if args_cli.auto_generate_episodes < 0:
     parser.error("--auto_generate_episodes must be >= 0.")
+if args_cli.validate_layouts_only < 0:
+    parser.error("--validate_layouts_only must be >= 0.")
 if (
     args_cli.auto_pick_step <= 0
     or args_cli.auto_pick_descend_step <= 0
@@ -1221,6 +1229,31 @@ def overlaps_2d(
     return False
 
 
+def validate_scenario_spawn_clearance(
+    scenario: ScenarioSpec, margin: float | None = None
+) -> None:
+    """Reject any initial object footprint that touches the tray footprint."""
+    clearance = 0.0 if margin is None else float(margin)
+    tray_half_x = 0.5 * float(scenario.tray_size[0])
+    tray_half_y = 0.5 * float(scenario.tray_size[1])
+    for cube in [*scenario.blue_cubes, *scenario.red_cubes]:
+        # A cuboid may have arbitrary yaw. Its half diagonal is a conservative
+        # axis-aligned footprint radius for every orientation.
+        cube_radius = 0.5 * math.hypot(float(cube.size[0]), float(cube.size[1]))
+        dx = abs(float(cube.pos[0]) - float(scenario.tray_pos[0]))
+        dy = abs(float(cube.pos[1]) - float(scenario.tray_pos[1]))
+        if (
+            dx < tray_half_x + cube_radius + clearance
+            and dy < tray_half_y + cube_radius + clearance
+        ):
+            raise RuntimeError(
+                "failed to sample tray-clear layout: "
+                f"episode={scenario.episode_index + 1} object={cube.name} "
+                f"dx={dx:.4f} dy={dy:.4f} radius={cube_radius:.4f} "
+                f"tray={scenario.tray_pos}"
+            )
+
+
 def sample_non_overlapping_xy(
     rng: np.random.Generator,
     *,
@@ -1320,19 +1353,28 @@ def split_workspace_for_tray_and_cubes(
 
 
 def _generate_blue_tray_scenario_once(
-    episode_index: int, layout_attempt: int = 0
+    episode_index: int,
+    layout_attempt: int = 0,
+    fixed_tray_pos: Vec3 | None = None,
 ) -> ScenarioSpec:
     """Generate one deterministic scenario candidate."""
-    seed = int(args_cli.seed + episode_index + layout_attempt * 1_000_003)
+    base_seed = int(args_cli.seed + episode_index)
+    seed = int(base_seed + layout_attempt * 1_000_003)
     rng = np.random.default_rng(seed)
 
-    blue_count = int(rng.integers(args_cli.min_blue_cubes, args_cli.max_blue_cubes + 1))
-    red_count = int(rng.integers(args_cli.min_red_cubes, args_cli.max_red_cubes + 1))
+    count_rng = np.random.default_rng(base_seed)
+    blue_count = int(
+        count_rng.integers(args_cli.min_blue_cubes, args_cli.max_blue_cubes + 1)
+    )
+    red_count = int(
+        count_rng.integers(args_cli.min_red_cubes, args_cli.max_red_cubes + 1)
+    )
     cube_size = float(args_cli.cube_size)
     max_cube_size = (
         float(args_cli.cube_size_range[1]) if args_cli.domain_randomization else cube_size
     )
-    cube_half = (max_cube_size * 0.5, max_cube_size * 0.5)
+    cube_half_radius = 0.5 * math.sqrt(2.0) * max_cube_size
+    cube_half = (cube_half_radius, cube_half_radius)
     tray_x, tray_y = map(float, args_cli.tray_size)
     tray_half = (tray_x * 0.5, tray_y * 0.5)
     x_bounds = (float(args_cli.workspace_x_min), float(args_cli.workspace_x_max))
@@ -1352,15 +1394,31 @@ def _generate_blue_tray_scenario_once(
 
     occupied: list[tuple[float, float, float, float, str]] = []
     cube_spread_refs: list[tuple[float, float]] = []
-    tray_xy = sample_non_overlapping_xy(
-        rng,
-        x_bounds=tray_x_bounds,
-        y_bounds=tray_y_bounds,
-        half_extents=tray_half,
-        occupied=occupied,
-        margin=float(args_cli.min_spawn_spacing),
-        label="tray",
-    )
+    if fixed_tray_pos is None:
+        tray_xy = sample_non_overlapping_xy(
+            rng,
+            x_bounds=tray_x_bounds,
+            y_bounds=tray_y_bounds,
+            half_extents=tray_half,
+            occupied=occupied,
+            margin=float(args_cli.min_spawn_spacing),
+            label="tray",
+        )
+        tray_z = float(args_cli.tray_z)
+    else:
+        tray_xy = (float(fixed_tray_pos[0]), float(fixed_tray_pos[1]))
+        tray_z = float(fixed_tray_pos[2])
+        if not (
+            x_bounds[0] + tray_half[0] <= tray_xy[0] <= x_bounds[1] - tray_half[0]
+            and y_bounds[0] + tray_half[1] <= tray_xy[1] <= y_bounds[1] - tray_half[1]
+            and within_workspace_reach(tray_xy)
+        ):
+            raise RuntimeError(
+                f"failed to sample: fixed tray pose {fixed_tray_pos} is outside the valid workspace"
+            )
+        occupied.append(
+            (tray_xy[0], tray_xy[1], tray_half[0], tray_half[1], "tray")
+        )
 
     tray_palette: list[Color] = [(0.1, 0.55, 0.22), (0.95, 0.78, 0.18), (0.28, 0.28, 0.3)]
     table_palette: list[Color] = [(0.55, 0.47, 0.37), (0.72, 0.72, 0.68), (0.38, 0.42, 0.44)]
@@ -1387,7 +1445,7 @@ def _generate_blue_tray_scenario_once(
     red_cubes: list[ScenarioObjectSpec] = []
     for idx in range(blue_count):
         size = sample_cuboid_size(rng)
-        rotated_half_extent = 0.5 * max(size[0], size[1])
+        rotated_half_extent = 0.5 * math.hypot(size[0], size[1])
         mass, static_friction, dynamic_friction, restitution = sample_cube_physics(rng)
         xy = sample_spread_non_overlapping_xy(
             rng,
@@ -1420,7 +1478,7 @@ def _generate_blue_tray_scenario_once(
 
     for idx in range(red_count):
         size = sample_cuboid_size(rng)
-        rotated_half_extent = 0.5 * max(size[0], size[1])
+        rotated_half_extent = 0.5 * math.hypot(size[0], size[1])
         mass, static_friction, dynamic_friction, restitution = sample_cube_physics(rng)
         xy = sample_spread_non_overlapping_xy(
             rng,
@@ -1498,7 +1556,7 @@ def _generate_blue_tray_scenario_once(
         mode="blue_tray",
         blue_cubes=blue_cubes,
         red_cubes=red_cubes,
-        tray_pos=(tray_xy[0], tray_xy[1], float(args_cli.tray_z)),
+        tray_pos=(tray_xy[0], tray_xy[1], tray_z),
         tray_size=(tray_x, tray_y, 0.025),
         tray_color=tray_color,
         table_color=table_color,
@@ -1514,15 +1572,18 @@ def _generate_blue_tray_scenario_once(
     )
 
 
-def generate_blue_tray_scenario(episode_index: int) -> ScenarioSpec:
+def generate_blue_tray_scenario(
+    episode_index: int, fixed_tray_pos: Vec3 | None = None
+) -> ScenarioSpec:
     """Generate a scenario, retrying rare greedy placement dead ends."""
     max_layout_attempts = 32
     last_error: RuntimeError | None = None
     for layout_attempt in range(max_layout_attempts):
         try:
             scenario = _generate_blue_tray_scenario_once(
-                episode_index, layout_attempt
+                episode_index, layout_attempt, fixed_tray_pos,
             )
+            validate_scenario_spawn_clearance(scenario)
             if layout_attempt > 0:
                 print(
                     f"[SCENARIO] episode={episode_index + 1} placement recovered "
@@ -3450,13 +3511,15 @@ def adapt_vector_scenario(
         )
 
     if fixed_tray_pos is not None:
-        dx = float(fixed_tray_pos[0]) - float(scenario.tray_pos[0])
-        dy = float(fixed_tray_pos[1]) - float(scenario.tray_pos[1])
-        scenario.tray_pos = fixed_tray_pos
-        scenario.placement_positions = [
-            (float(pos[0]) + dx, float(pos[1]) + dy, float(pos[2]))
-            for pos in scenario.placement_positions
-        ]
+        mismatch = max(
+            abs(float(actual) - float(expected))
+            for actual, expected in zip(scenario.tray_pos, fixed_tray_pos)
+        )
+        if mismatch > 1.0e-6:
+            raise RuntimeError(
+                f"vector scenario tray mismatch: sampled={scenario.tray_pos} fixed={fixed_tray_pos}"
+            )
+        scenario.tray_pos = tuple(float(value) for value in fixed_tray_pos)  # type: ignore[assignment]
 
     # Vector environments share one neutral Dome. Local Sphere lights supply
     # independent per-env direction, color, position, and intensity.
@@ -3486,6 +3549,7 @@ def adapt_vector_scenario(
     scenario.lights = local_lights
     scenario.light_intensity = 900.0
     scenario.light_color = (0.86, 0.86, 0.86)
+    validate_scenario_spawn_clearance(scenario)
     return scenario
 
 
@@ -3816,7 +3880,9 @@ def run_vectorized_dataset() -> None:
             scenarios: list[ScenarioSpec] = []
             for env_id in range(env.num_envs):
                 episode_index = first_episode + batch_start + env_id
-                scenario = generate_blue_tray_scenario(episode_index)
+                scenario = generate_blue_tray_scenario(
+                    episode_index, fixed_tray_positions[env_id]
+                )
                 scenarios.append(
                     adapt_vector_scenario(
                         scenario,
@@ -3886,8 +3952,44 @@ def run_vectorized_dataset() -> None:
     )
 
 
+def run_layout_validation_only() -> None:
+    """Stress fixed-tray vector sampling without recording any episodes."""
+    count = int(args_cli.validate_layouts_only)
+    env_count = max(1, int(args_cli.num_envs))
+    first_episode = int(args_cli.episode_index)
+    initial = [
+        generate_blue_tray_scenario(first_episode + env_id)
+        for env_id in range(env_count)
+    ]
+    fixed_trays = [scenario.tray_pos for scenario in initial]
+    blue_counts: dict[int, int] = {}
+    for offset in range(count):
+        scenario = generate_blue_tray_scenario(
+            first_episode + offset, fixed_trays[offset % env_count]
+        )
+        validate_scenario_spawn_clearance(scenario)
+        blue_count = len(scenario.blue_cubes)
+        blue_counts[blue_count] = blue_counts.get(blue_count, 0) + 1
+    print(
+        "[LAYOUT-VALIDATION] "
+        + json.dumps(
+            {
+                "validated_layouts": count,
+                "vector_env_slots": env_count,
+                "fixed_tray_positions": fixed_trays,
+                "blue_cube_counts": blue_counts,
+                "tray_overlap_count": 0,
+            },
+            sort_keys=True,
+        )
+    )
+
+
 def main() -> None:
-    run_vectorized_dataset()
+    if args_cli.validate_layouts_only > 0:
+        run_layout_validation_only()
+    else:
+        run_vectorized_dataset()
 
 
 if __name__ == "__main__":

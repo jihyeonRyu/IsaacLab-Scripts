@@ -261,12 +261,27 @@ Current generation defaults:
 - solver recovery allows up to 3 retries per cube before marking the episode failed;
 - when domain randomization is enabled, each background RGB channel is sampled independently over the full `[0, 1]` range; task lighting remains near-neutral.
 
-The wider defaults were validated with 2,000 five-object layouts. All layouts
-generated within the 32-attempt guard (mean 1.018 attempts, maximum 3). A final
-four-environment, three-blue-cube regression completed 4/4 episodes and 12/12
-pick-place operations. Across those 12 grasps, mean XY error was 11.37 mm
-immediately after yaw, 5.78 mm after recentering, and 1.11 mm immediately before
-closing the gripper.
+Vectorized generation samples loose objects against each environment slot's
+actual fixed tray pose; it never shifts only the tray metadata after sampling.
+The yaw-conservative object footprint is checked again after vector asset-size
+adaptation, and generation fails fast if any initial object touches the tray.
+This path was stress-tested with:
+
+```bash
+python franka_groot_e2e/scripts/01_generate/franka_lift_auto_parallel.py \
+  --headless \
+  --no-multi_gpu \
+  --num_envs 4 \
+  --validate_layouts_only 2000 \
+  --seed 50007 \
+  --asset_version_override 5.1
+```
+
+All 2,000 fixed-tray layouts passed with zero tray/object footprint overlaps;
+the blue-cube counts stayed balanced at 680 one-cube, 644 two-cube, and 676
+three-cube scenarios. A separate four-environment Isaac physics smoke test also
+recorded zero initial footprint overlaps.
+It completed 4/4 episodes and 8/8 pick-place operations without recovery exhaustion.
 
 ### Analyze trajectory coverage and scenario success
 
