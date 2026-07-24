@@ -276,6 +276,87 @@ def add_args() -> argparse.ArgumentParser:
     parser.add_argument("--auto_pick_yaw_offset", type=float, default=0.0)
     parser.add_argument("--auto_pick_hold_steps", type=int, default=22, help="22 steps is about 0.367 s at 60 Hz.")
     parser.add_argument("--auto_pick_state_timeout", type=int, default=1080, help="1080 steps is 18 s at 60 Hz.")
+    parser.add_argument(
+        "--randomize_start_pose",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Move the EEF to a deterministic random robot-front tabletop position before recording. "
+            "The pre-roll translates only, preserving the validated floor-facing tool orientation."
+        ),
+    )
+    parser.add_argument("--start_ee_x_range", type=float, nargs=2, default=(0.36, 0.54), metavar=("MIN", "MAX"))
+    parser.add_argument("--start_ee_y_range", type=float, nargs=2, default=(-0.18, 0.18), metavar=("MIN", "MAX"))
+    parser.add_argument("--start_ee_z_range", type=float, nargs=2, default=(0.34, 0.48), metavar=("MIN", "MAX"))
+    parser.add_argument("--start_pose_step", type=float, default=0.03)
+    parser.add_argument("--start_pose_tolerance", type=float, default=0.012)
+    parser.add_argument("--start_pose_timeout_steps", type=int, default=480)
+    parser.add_argument("--start_pose_hold_steps", type=int, default=12)
+    parser.add_argument(
+        "--start_pose_max_tilt_deg",
+        type=float,
+        default=60.0,
+        help="Maximum allowed angle between the tool +Z axis and world down during start-pose pre-roll.",
+    )
+    parser.add_argument(
+        "--recovery_waypoint_prob",
+        type=float,
+        default=0.20,
+        help="Probability per blue-cube target of visiting a nearby random waypoint before direct approach.",
+    )
+    parser.add_argument(
+        "--recovery_waypoint_radius_range",
+        type=float,
+        nargs=2,
+        default=(0.08, 0.16),
+        metavar=("MIN", "MAX"),
+    )
+    parser.add_argument(
+        "--recovery_waypoint_height_range",
+        type=float,
+        nargs=2,
+        default=(0.14, 0.24),
+        metavar=("MIN", "MAX"),
+        help="Recovery waypoint height above the target cube center in meters.",
+    )
+    parser.add_argument(
+        "--solver_recovery_max_attempts",
+        type=int,
+        default=2,
+        help="Maximum safe-raise/recenter retries per cube after IK motion stalls.",
+    )
+    parser.add_argument(
+        "--solver_recovery_stall_steps",
+        type=int,
+        default=240,
+        help="Trigger solver recovery after this many control steps without meaningful distance progress.",
+    )
+    parser.add_argument(
+        "--solver_recovery_progress_epsilon",
+        type=float,
+        default=0.002,
+        help="Target-distance improvement in meters that resets the IK stall counter.",
+    )
+    parser.add_argument(
+        "--solver_recovery_yaw_progress_epsilon",
+        type=float,
+        default=0.01,
+        help="Yaw-error improvement in radians that resets the align-yaw stall counter.",
+    )
+    parser.add_argument(
+        "--solver_recovery_raise_clearance",
+        type=float,
+        default=0.10,
+        help="Minimum vertical rise before moving to the neutral solver-recovery pose.",
+    )
+    parser.add_argument(
+        "--solver_recovery_center",
+        type=float,
+        nargs=3,
+        default=(0.45, 0.0, 0.38),
+        metavar=("X", "Y", "Z"),
+        help="High, robot-front EEF pose used to escape a poor differential-IK joint configuration.",
+    )
     parser.add_argument("--grasp_min_width", type=float, default=0.012)
     parser.add_argument("--grasp_min_lift", type=float, default=0.025)
     parser.add_argument("--domain_randomization", action="store_true", default=True)
@@ -544,6 +625,54 @@ if args_cli.auto_pick_step <= 0 or args_cli.auto_pick_descend_step <= 0 or args_
     parser.error("automatic pick motion step/tolerance values must be > 0.")
 if args_cli.auto_pick_hold_steps < 1 or args_cli.auto_pick_state_timeout < 1:
     parser.error("automatic pick hold/timeout step counts must be >= 1.")
+for range_name in ("start_ee_x_range", "start_ee_y_range", "start_ee_z_range"):
+    low, high = map(float, getattr(args_cli, range_name))
+    if high < low:
+        parser.error(f"--{range_name} must satisfy MIN <= MAX.")
+if float(args_cli.start_ee_x_range[0]) <= 0.0:
+    parser.error("--start_ee_x_range must stay in front of the robot base (MIN > 0).")
+if float(args_cli.start_ee_z_range[0]) < 0.25:
+    parser.error("--start_ee_z_range MIN must be >= 0.25 m for tabletop clearance.")
+if (
+    float(args_cli.start_ee_x_range[0]) < float(args_cli.workspace_x_min)
+    or float(args_cli.start_ee_x_range[1]) > float(args_cli.workspace_x_max)
+    or float(args_cli.start_ee_y_range[0]) < float(args_cli.workspace_y_min)
+    or float(args_cli.start_ee_y_range[1]) > float(args_cli.workspace_y_max)
+):
+    parser.error("start EEF XY ranges must remain inside the configured robot-front workspace.")
+if args_cli.start_pose_step <= 0 or args_cli.start_pose_tolerance <= 0:
+    parser.error("start pose step/tolerance values must be > 0.")
+if args_cli.start_pose_timeout_steps < 1 or args_cli.start_pose_hold_steps < 0:
+    parser.error("start pose timeout must be >= 1 and hold steps must be >= 0.")
+if not 0.0 < float(args_cli.start_pose_max_tilt_deg) <= 75.0:
+    parser.error("--start_pose_max_tilt_deg must be in (0, 75].")
+if not 0.0 <= float(args_cli.recovery_waypoint_prob) <= 1.0:
+    parser.error("--recovery_waypoint_prob must be in [0, 1].")
+recovery_radius_min, recovery_radius_max = map(float, args_cli.recovery_waypoint_radius_range)
+if recovery_radius_min <= 0.0 or recovery_radius_max < recovery_radius_min:
+    parser.error("--recovery_waypoint_radius_range must satisfy 0 < MIN <= MAX.")
+recovery_height_min, recovery_height_max = map(float, args_cli.recovery_waypoint_height_range)
+if recovery_height_min < float(args_cli.auto_pick_approach_height) or recovery_height_max < recovery_height_min:
+    parser.error("recovery waypoint heights must satisfy approach_height <= MIN <= MAX.")
+if args_cli.solver_recovery_max_attempts < 0:
+    parser.error("--solver_recovery_max_attempts must be >= 0.")
+if args_cli.solver_recovery_stall_steps < 1:
+    parser.error("--solver_recovery_stall_steps must be >= 1.")
+if args_cli.solver_recovery_progress_epsilon <= 0.0:
+    parser.error("--solver_recovery_progress_epsilon must be > 0.")
+if args_cli.solver_recovery_yaw_progress_epsilon <= 0.0:
+    parser.error("--solver_recovery_yaw_progress_epsilon must be > 0.")
+if args_cli.solver_recovery_raise_clearance <= 0.0:
+    parser.error("--solver_recovery_raise_clearance must be > 0.")
+solver_center_x, solver_center_y, solver_center_z = map(float, args_cli.solver_recovery_center)
+if not (
+    float(args_cli.workspace_x_min) <= solver_center_x <= float(args_cli.workspace_x_max)
+    and float(args_cli.workspace_y_min) <= solver_center_y <= float(args_cli.workspace_y_max)
+    and math.hypot(solver_center_x, solver_center_y) <= float(args_cli.workspace_radius_max)
+):
+    parser.error("solver recovery center XY must remain inside the reachable robot-front workspace.")
+if solver_center_z < 0.30:
+    parser.error("solver recovery center Z must be >= 0.30 m for obstacle clearance.")
 if not 0.0 <= args_cli.depth_dropout_prob < 1.0:
     parser.error("--depth_dropout_prob must be in [0, 1).")
 for range_name in ("external_depth_vis_range", "wrist_depth_vis_range"):
@@ -819,6 +948,7 @@ class ScenarioObjectSpec:
     static_friction: float = 0.8
     dynamic_friction: float = 0.7
     restitution: float = 0.0
+    recovery_waypoint: Vec3 | None = None
 
 
 @dataclass
@@ -850,6 +980,10 @@ class ScenarioSpec:
     camera_eye: Vec3
     camera_target: Vec3
     background_color: Color
+    start_ee_target: Vec3 | None = None
+    start_ee_actual: Vec3 | None = None
+    start_ee_tilt_deg: float | None = None
+    start_ee_reached: bool | None = None
 
 
 def yaw_quat_xyzw(yaw: float) -> tuple[float, float, float, float]:
@@ -884,6 +1018,39 @@ def cuboid_center_z(size_z: float) -> float:
     """Keep every randomized cuboid bottom on the original tabletop plane."""
     table_surface_z = float(args_cli.cube_z) - 0.5 * float(args_cli.cube_size)
     return table_surface_z + 0.5 * float(size_z)
+
+
+def sample_start_ee_target(rng: np.random.Generator) -> Vec3 | None:
+    """Sample a reachable robot-front EEF position without changing tool orientation."""
+    if not args_cli.randomize_start_pose:
+        return None
+    bounds = (args_cli.start_ee_x_range, args_cli.start_ee_y_range, args_cli.start_ee_z_range)
+    for _ in range(256):
+        target = tuple(float(rng.uniform(*axis_bounds)) for axis_bounds in bounds)
+        if within_workspace_reach((target[0], target[1])):
+            return tuple(round(value, 6) for value in target)  # type: ignore[return-value]
+    raise RuntimeError("failed to sample a reachable randomized start EEF target")
+
+
+def sample_recovery_waypoint(
+    rng: np.random.Generator, cube: ScenarioObjectSpec
+) -> Vec3 | None:
+    """Sample a safe nearby waypoint for a deliberate off-target recovery approach."""
+    if rng.random() >= float(args_cli.recovery_waypoint_prob):
+        return None
+    margin = 0.02
+    for _ in range(256):
+        angle = float(rng.uniform(-math.pi, math.pi))
+        radius = float(rng.uniform(*args_cli.recovery_waypoint_radius_range))
+        xy = (cube.pos[0] + radius * math.cos(angle), cube.pos[1] + radius * math.sin(angle))
+        if not float(args_cli.workspace_x_min) + margin <= xy[0] <= float(args_cli.workspace_x_max) - margin:
+            continue
+        if not float(args_cli.workspace_y_min) + margin <= xy[1] <= float(args_cli.workspace_y_max) - margin:
+            continue
+        if not within_workspace_reach(xy):
+            continue
+        height = float(rng.uniform(*args_cli.recovery_waypoint_height_range))
+        return (round(xy[0], 6), round(xy[1], 6), round(cube.pos[2] + height, 6))
 
 
 def sample_cube_physics(rng: np.random.Generator) -> tuple[float, float, float, float]:
@@ -1256,6 +1423,12 @@ def _generate_blue_tray_scenario_once(
     else:
         background_color = (0.10, 0.12, 0.15)
     lights = generate_episode_lights(rng, light_intensity, light_color, background_color)
+    # Keep motion augmentation independent from layout/appearance RNG so toggling
+    # it does not silently change the sampled scene for the same episode seed.
+    augmentation_rng = np.random.default_rng(seed ^ 0x5A17A11)
+    start_ee_target = sample_start_ee_target(augmentation_rng)
+    for cube in blue_cubes:
+        cube.recovery_waypoint = sample_recovery_waypoint(augmentation_rng, cube)
 
     return ScenarioSpec(
         episode_index=episode_index,
@@ -1275,6 +1448,7 @@ def _generate_blue_tray_scenario_once(
         camera_eye=camera_eye,
         camera_target=camera_target,
         background_color=background_color,
+        start_ee_target=start_ee_target,
     )
 
 
@@ -2284,8 +2458,115 @@ def read_gripper_width(env, env_id: int = 0) -> tuple[float, list[float]]:
     return float(sum(joints)), joints
 
 
+def tool_down_tilt_deg_xyzw(quat: torch.Tensor) -> float:
+    """Return the tool +Z tilt from world down for an xyzw quaternion."""
+    x, y, _, _ = [float(value.item()) for value in quat]
+    local_z_world_z = 1.0 - 2.0 * (x * x + y * y)
+    down_alignment = max(-1.0, min(1.0, -local_z_world_z))
+    return math.degrees(math.acos(down_alignment))
+
+
+def move_to_randomized_start_poses(
+    env,
+    scenarios: list[ScenarioSpec],
+    active_count: int,
+) -> None:
+    """Translate active EEFs to randomized starts before any frame is recorded."""
+    selected = [
+        (env_id, scenario)
+        for env_id, scenario in enumerate(scenarios[:active_count])
+        if scenario.start_ee_target is not None
+    ]
+    if not selected:
+        return
+    if env.action_space.shape[-1] != 7:
+        raise RuntimeError(
+            f"start-pose pre-roll expects 7D actions, got {env.action_space.shape}"
+        )
+
+    target_by_env = {
+        env_id: torch.tensor(
+            scenario.start_ee_target, device=env.device, dtype=torch.float32
+        )
+        for env_id, scenario in selected
+    }
+    max_tilt = float(args_cli.start_pose_max_tilt_deg)
+    for env_id, _ in selected:
+        _, ee_quat = read_ee_pose_env(env, env_id)
+        initial_tilt = tool_down_tilt_deg_xyzw(ee_quat)
+        if initial_tilt > max_tilt:
+            raise RuntimeError(
+                f"env {env_id} initial tool tilt {initial_tilt:.2f} deg exceeds "
+                f"the floor-facing limit {max_tilt:.2f} deg"
+            )
+
+    open_action = torch.zeros(
+        (env.num_envs, 7), device=env.device, dtype=torch.float32
+    )
+    open_action[:, 6] = float(args_cli.gripper_open_command)
+    reached: set[int] = set()
+    for _ in range(int(args_cli.start_pose_timeout_steps)):
+        action = open_action.clone()
+        for env_id, _ in selected:
+            ee_pos, ee_quat = read_ee_pose_env(env, env_id)
+            tilt = tool_down_tilt_deg_xyzw(ee_quat)
+            if tilt > max_tilt:
+                raise RuntimeError(
+                    f"env {env_id} tool tilt {tilt:.2f} deg exceeded the "
+                    f"floor-facing limit {max_tilt:.2f} deg during start pre-roll"
+                )
+            delta = target_by_env[env_id] - ee_pos
+            distance = float(torch.linalg.norm(delta).item())
+            if distance <= float(args_cli.start_pose_tolerance):
+                reached.add(env_id)
+                continue
+            reached.discard(env_id)
+            max_step = float(args_cli.start_pose_step)
+            step = delta if distance <= max_step else delta / distance * max_step
+            action[env_id, 0:3] = step
+        if len(reached) == len(selected):
+            break
+        env.step(action)
+
+    for _ in range(int(args_cli.start_pose_hold_steps)):
+        env.step(open_action)
+
+    for env_id, scenario in selected:
+        ee_pos, ee_quat = read_ee_pose_env(env, env_id)
+        final_tilt = tool_down_tilt_deg_xyzw(ee_quat)
+        distance = float(torch.linalg.norm(target_by_env[env_id] - ee_pos).item())
+        scenario.start_ee_actual = tuple(
+            round(float(value), 6) for value in tensor_to_numpy(ee_pos).tolist()
+        )  # type: ignore[assignment]
+        scenario.start_ee_tilt_deg = round(final_tilt, 4)
+        scenario.start_ee_reached = distance <= float(args_cli.start_pose_tolerance)
+        status = "reached" if scenario.start_ee_reached else "timeout"
+        print(
+            f"[START-AUG] env={env_id} {status} target={scenario.start_ee_target} "
+            f"actual={scenario.start_ee_actual} error={distance:.4f}m "
+            f"tool_down_tilt={final_tilt:.2f}deg"
+        )
+        if final_tilt > max_tilt:
+            raise RuntimeError(
+                f"env {env_id} final tool tilt {final_tilt:.2f} deg exceeds "
+                f"the floor-facing limit {max_tilt:.2f} deg"
+            )
+
+
 class AutoPickPlaceController:
     """Yaw-aligning pick/place FSM with two-signal grasp verification."""
+
+    SOLVER_RECOVERABLE_STATES = frozenset(
+        {
+            "recovery_waypoint",
+            "approach",
+            "align_yaw",
+            "descend",
+            "move_above_slot",
+            "place_descend",
+        }
+    )
+    SOLVER_HOLDING_STATES = frozenset({"move_above_slot", "place_descend"})
 
     def __init__(self, scenario: ScenarioSpec | None, env_id: int = 0):
         self.scenario = scenario
@@ -2303,12 +2584,25 @@ class AutoPickPlaceController:
         self.retry_count = 0
         self.yaw_response_sign = 1.0
         self.yaw_probe_start: float | None = None
+        self.recovery_waypoint: torch.Tensor | None = None
+        self.recovery_completed = False
+        self.solver_recovery_attempts = 0
+        self.solver_recovery_holding = False
+        self.solver_recovery_return_state: str | None = None
+        self.solver_recovery_raise_target: torch.Tensor | None = None
+        self.solver_recovery_center_target: torch.Tensor | None = None
+        self.best_position_distance = math.inf
+        self.steps_without_motion_progress = 0
         self.events: list[dict[str, Any]] = []
 
     def status_payload(self) -> dict[str, Any]:
         return {"active": self.active, "completed": self.completed, "failed": self.failed,
                 "state": self.state, "target": self.label, "slot_index": self.slot_index,
-                "retry_count": self.retry_count, "env_id": self.env_id}
+                "retry_count": self.retry_count, "env_id": self.env_id,
+                "recovery_augmented": self.recovery_waypoint is not None,
+                "recovery_completed": self.recovery_completed,
+                "solver_recovery_attempts": self.solver_recovery_attempts,
+                "solver_recovery_holding": self.solver_recovery_holding}
 
     def drain_events(self) -> list[dict[str, Any]]:
         events, self.events = self.events, []
@@ -2321,6 +2615,8 @@ class AutoPickPlaceController:
 
     def _transition(self, state: str, **data: Any) -> None:
         self.state, self.state_steps = state, 0
+        self.best_position_distance = math.inf
+        self.steps_without_motion_progress = 0
         if state == "align_yaw":
             self.yaw_response_sign = 1.0
             self.yaw_probe_start = None
@@ -2338,7 +2634,12 @@ class AutoPickPlaceController:
         self.active, self.completed, self.failed = True, False, False
         self.processed.clear()
         self.slot_index = self.retry_count = 0
-        self._event("sequence_started", placement_positions=self.scenario.placement_positions)
+        self._event(
+            "sequence_started",
+            placement_positions=self.scenario.placement_positions,
+            start_ee_target=self.scenario.start_ee_target,
+            start_ee_actual=self.scenario.start_ee_actual,
+        )
         return self._select_next(env)
 
     def toggle(self, env) -> None:
@@ -2362,12 +2663,39 @@ class AutoPickPlaceController:
         self.asset_name, self.label, self.current_spec = cube.asset_name, cube.name, cube
         self.grasp_start_z = float(pos[2].item())
         self.grasp_offset = self.fixed_target = None
-        self._transition("open", target_pos=tensor_to_numpy(pos).tolist())
+        self.solver_recovery_attempts = 0
+        self.solver_recovery_holding = False
+        self.solver_recovery_return_state = None
+        self.solver_recovery_raise_target = None
+        self.solver_recovery_center_target = None
+        self.recovery_waypoint = (
+            torch.tensor(cube.recovery_waypoint, device=env.device, dtype=torch.float32)
+            if cube.recovery_waypoint is not None
+            else None
+        )
+        self.recovery_completed = False
+        self._transition(
+            "open", target_pos=tensor_to_numpy(pos).tolist(),
+            recovery_waypoint=cube.recovery_waypoint,
+        )
         return True
 
-    def _position_action(self, action, ee_pos, target, max_step: float) -> bool:
+    def _track_motion_progress(self, metric: float, epsilon: float) -> None:
+        if metric + epsilon < self.best_position_distance:
+            self.best_position_distance = metric
+            self.steps_without_motion_progress = 0
+        else:
+            self.steps_without_motion_progress += 1
+
+    def _position_action(
+        self, action, ee_pos, target, max_step: float, *, track_progress: bool = True
+    ) -> bool:
         delta = target - ee_pos
         distance = float(torch.linalg.norm(delta).item())
+        if track_progress:
+            self._track_motion_progress(
+                distance, float(args_cli.solver_recovery_progress_epsilon)
+            )
         action[:, 0:6] = 0.0
         if distance <= float(args_cli.auto_pick_tolerance):
             return True
@@ -2387,34 +2715,163 @@ class AutoPickPlaceController:
         )
         return slot
 
+    def _start_solver_recovery(
+        self,
+        env,
+        action: torch.Tensor,
+        ee_pos: torch.Tensor,
+        trigger: str,
+    ) -> bool:
+        """Escape a stalled differential-IK solution through high neutral waypoints."""
+        stalled_state = self.state
+        max_attempts = int(args_cli.solver_recovery_max_attempts)
+        if (
+            stalled_state not in self.SOLVER_RECOVERABLE_STATES
+            or self.solver_recovery_attempts >= max_attempts
+        ):
+            return False
+
+        self.solver_recovery_attempts += 1
+        self.solver_recovery_holding = stalled_state in self.SOLVER_HOLDING_STATES
+        self.solver_recovery_return_state = (
+            "move_above_slot" if self.solver_recovery_holding else "open"
+        )
+        if stalled_state == "recovery_waypoint":
+            # The deliberate augmentation is single-shot; do not repeat it after
+            # an actual IK recovery.
+            self.recovery_completed = True
+        if not self.solver_recovery_holding:
+            self.grasp_offset = None
+            self.fixed_target = None
+
+        center = torch.tensor(
+            args_cli.solver_recovery_center,
+            device=env.device,
+            dtype=torch.float32,
+        )
+        raise_target = ee_pos.clone()
+        raise_target[2] = max(
+            float(ee_pos[2].item()) + float(args_cli.solver_recovery_raise_clearance),
+            float(center[2].item()),
+        )
+        self.solver_recovery_raise_target = raise_target
+        self.solver_recovery_center_target = center
+        action[:, 0:6] = 0.0
+        action[:, 6] = (
+            args_cli.gripper_close_command
+            if self.solver_recovery_holding
+            else args_cli.gripper_open_command
+        )
+        self._event(
+            "solver_recovery_started",
+            trigger=trigger,
+            stalled_state=stalled_state,
+            attempt=self.solver_recovery_attempts,
+            raise_target=tensor_to_numpy(raise_target).tolist(),
+            center_target=tensor_to_numpy(center).tolist(),
+            return_state=self.solver_recovery_return_state,
+        )
+        self._transition("solver_recovery_raise", stalled_state=stalled_state)
+        return True
+
     def apply(self, env, action: torch.Tensor) -> torch.Tensor:
         if not self.active or self.asset_name is None:
             return action
+        state_at_start = self.state
         self.state_steps += 1
         action[:, :] = 0.0
         action[:, 6] = args_cli.gripper_open_command
+        ee_pos, ee_quat = read_ee_pose_env(env, self.env_id)
         if self.state_steps > int(args_cli.auto_pick_state_timeout):
+            failed_state = self.state
+            if self._start_solver_recovery(
+                env, action, ee_pos, trigger="state_timeout"
+            ):
+                return action
+            reason = "state_timeout"
+            if (
+                failed_state in self.SOLVER_RECOVERABLE_STATES
+                and int(args_cli.solver_recovery_max_attempts) > 0
+                and self.solver_recovery_attempts
+                >= int(args_cli.solver_recovery_max_attempts)
+            ):
+                reason = "solver_recovery_exhausted"
             self.failed, self.active, self.state = True, False, "failed"
-            self._event("sequence_failed", reason="state_timeout")
+            self._event(
+                "sequence_failed", reason=reason, failed_state=failed_state
+            )
             return action
 
-        ee_pos, ee_quat = read_ee_pose_env(env, self.env_id)
         cube_pos, cube_quat = read_rigid_object_pose_env(env, self.asset_name, self.env_id)
         hold = int(args_cli.auto_pick_hold_steps)
 
-        if self.state == "open":
+        if self.state == "solver_recovery_raise":
+            assert self.solver_recovery_raise_target is not None
+            reached = self._position_action(
+                action, ee_pos, self.solver_recovery_raise_target,
+                float(args_cli.auto_pick_step),
+            )
+            action[:, 6] = (
+                args_cli.gripper_close_command
+                if self.solver_recovery_holding
+                else args_cli.gripper_open_command
+            )
+            if reached:
+                self._transition("solver_recovery_recenter")
+        elif self.state == "solver_recovery_recenter":
+            assert self.solver_recovery_center_target is not None
+            reached = self._position_action(
+                action, ee_pos, self.solver_recovery_center_target,
+                float(args_cli.auto_pick_step),
+            )
+            action[:, 6] = (
+                args_cli.gripper_close_command
+                if self.solver_recovery_holding
+                else args_cli.gripper_open_command
+            )
+            if reached:
+                return_state = self.solver_recovery_return_state or "open"
+                self._event(
+                    "solver_recovery_completed", return_state=return_state,
+                    attempt=self.solver_recovery_attempts,
+                )
+                self.solver_recovery_holding = False
+                self._transition(return_state)
+        elif self.state == "open":
             if self.state_steps >= hold:
+                next_state = (
+                    "recovery_waypoint"
+                    if self.recovery_waypoint is not None and not self.recovery_completed
+                    else "approach"
+                )
+                self._transition(next_state)
+        elif self.state == "recovery_waypoint":
+            assert self.recovery_waypoint is not None
+            if self._position_action(
+                action, ee_pos, self.recovery_waypoint, float(args_cli.auto_pick_step)
+            ):
+                self.recovery_completed = True
+                self._event(
+                    "recovery_waypoint_reached",
+                    waypoint=tensor_to_numpy(self.recovery_waypoint).tolist(),
+                )
                 self._transition("approach")
         elif self.state == "align_yaw":
             # Keep the tool centered above the cube while rotating. Pure
             # rotation commands can otherwise translate the offset EE frame.
             approach_target = cube_pos.clone()
             approach_target[2] += float(args_cli.auto_pick_approach_height)
-            self._position_action(action, ee_pos, approach_target, float(args_cli.auto_pick_step))
+            self._position_action(
+                action, ee_pos, approach_target, float(args_cli.auto_pick_step),
+                track_progress=False,
+            )
             target_yaw = quat_yaw_xyzw(cube_quat) + float(args_cli.auto_pick_yaw_offset)
             gripper_yaw = projected_local_y_yaw_xyzw(ee_quat)
             assert self.current_spec is not None
             error = cuboid_grasp_yaw_error(target_yaw, gripper_yaw, self.current_spec.size)
+            self._track_motion_progress(
+                abs(error), float(args_cli.solver_recovery_yaw_progress_epsilon)
+            )
             # Probe one fixed positive command long enough to overcome physics
             # response lag, then lock the observed IK yaw polarity.
             probe_steps = int(round(0.4 * float(args_cli.control_hz)))
@@ -2507,6 +2964,30 @@ class AutoPickPlaceController:
                 self.retry_count = 0
                 self._event("cube_placed", placed_label=placed)
                 self._select_next(env)
+        if (
+            self.active
+            and self.state == state_at_start
+            and state_at_start in self.SOLVER_RECOVERABLE_STATES
+            and int(args_cli.solver_recovery_max_attempts) > 0
+            and self.steps_without_motion_progress
+            >= int(args_cli.solver_recovery_stall_steps)
+        ):
+            if self._start_solver_recovery(
+                env, action, ee_pos, trigger="position_stall"
+            ):
+                return action
+            failed_state = self.state
+            self._event(
+                "solver_recovery_exhausted",
+                stalled_state=failed_state,
+                attempts=self.solver_recovery_attempts,
+            )
+            self.failed, self.active, self.state = True, False, "failed"
+            self._event(
+                "sequence_failed",
+                reason="solver_recovery_exhausted",
+                failed_state=failed_state,
+            )
         return action
 
 def run_automatic_episode(env, scenario: ScenarioSpec) -> None:
@@ -2527,6 +3008,7 @@ def run_automatic_episode(env, scenario: ScenarioSpec) -> None:
     level_scenario_cubes(env, scenario)
     for _ in range(int(round(0.24 * float(args_cli.control_hz)))):
         env.step(open_action)
+    move_to_randomized_start_poses(env, [scenario], 1)
     env.sim.render()
 
     recorder.start_new_episode()
@@ -2969,6 +3451,7 @@ def run_vector_batch(
     write_vector_object_poses(env, scenarios, template)
     for _ in range(int(round(0.24 * float(args_cli.control_hz)))):
         env.step(open_action)
+    move_to_randomized_start_poses(env, scenarios, active_count)
     env.sim.render()
 
     controllers = [
