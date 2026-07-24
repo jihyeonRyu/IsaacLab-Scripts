@@ -15,6 +15,7 @@ datasets remain outside Git.
 ```text
 franka_groot_e2e/
 ├── README.md
+├── run_pipeline.sh      # resumable detached generation → analysis → SFT → eval supervisor
 ├── scripts/
 │   ├── 01_generate/     # Isaac Lab generation and trajectory analysis
 │   ├── 02_convert/      # Isaac output → LeRobot v2.1
@@ -59,6 +60,24 @@ The bundled assets are compact evidence from completed runs, not mockups:
 
 Both venv activation scripts include the local native libraries required by this container. The GR00T venv also sets `HF_HOME` and `GROOT_COSMOS_MODEL_PATH` when they are not already set.
 
+### Detached sequential execution
+
+`run_pipeline.sh` waits for the current generator, validates its aggregate
+summary, and then runs analysis, successful-episode LeRobot conversion, 8-GPU
+SFT, and 100-episode-per-task Arena evaluation in order. Each completed stage
+has a marker under `/workspace/output/franka_e2e_pipeline_fixedtray_recovery_v3`,
+so rerunning the supervisor resumes after the last completed stage.
+
+```bash
+nohup env GENERATION_PID=<generator-parent-pid> \
+  bash /workspace/IsaacLab-Scripts/franka_groot_e2e/run_pipeline.sh \
+  > /workspace/output/franka_e2e_pipeline_fixedtray_recovery_v3.log 2>&1 &
+```
+
+Closing the terminal or the client computer does not stop this server-side job.
+The Docker container and its host server must remain running; shutting down
+either one stops all processes.
+
 ## 0. Rebuild the Docker environments
 
 Do not install the full workflow into one Python environment. The working
@@ -83,7 +102,7 @@ git clone --branch main --single-branch \
   https://github.com/jihyeonRyu/IsaacLab-Scripts.git
 ```
 
-Verified revisions: GR00T `d6ee11a`, Arena `aba2e18`, and this E2E package from the Scripts `main` branch.
+Verified revisions: GR00T `d6ee11a`, Arena `6bceff7`, and this E2E package from the Scripts `main` branch.
 
 ### 0.1 Install the uv bootstrap
 
