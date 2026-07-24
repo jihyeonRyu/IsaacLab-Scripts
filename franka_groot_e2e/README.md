@@ -611,7 +611,7 @@ bash /workspace/Isaac-GR00T/examples/Franka/train_franka.sh
 
 The current defaults are the reproducible full-run settings:
 
-- 8 GPUs and global batch size 64;
+- 8 GPUs and global batch size 128 (16 samples per GPU, no gradient accumulation);
 - 10,000 optimizer steps, checkpoint every 250 steps;
 - `crop_fraction=0.98` with shortest image edge 256;
 - state dropout 0.20;

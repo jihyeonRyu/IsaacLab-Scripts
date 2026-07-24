@@ -23,6 +23,7 @@ CHECKPOINT="${CHECKPOINT:-}"
 EVAL_OUTPUT="${EVAL_OUTPUT:-}"
 STATE_DIR="${STATE_DIR:-}"
 GENERATION_SEED="${GENERATION_SEED:-70007}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-128}"
 WAIT_FOR_PID="${WAIT_FOR_PID:-}"
 GROOT_BRANCH="${GROOT_BRANCH:-jryu/franka-demo}"
 ARENA_BRANCH="${ARENA_BRANCH:-jryu/franka-demo}"
@@ -53,6 +54,7 @@ Output overrides:
   --eval-output PATH
   --state-dir PATH
   --generation-seed N
+  --global-batch-size N Global SFT batch; must be divisible by 8 (default: 128)
   --wait-for-pid PID
 
 Advanced model overrides:
@@ -107,6 +109,7 @@ while [ "$#" -gt 0 ]; do
         --eval-output) need_value "$@"; EVAL_OUTPUT=$2; shift 2 ;;
         --state-dir) need_value "$@"; STATE_DIR=$2; shift 2 ;;
         --generation-seed) need_value "$@"; GENERATION_SEED=$2; shift 2 ;;
+        --global-batch-size) need_value "$@"; GLOBAL_BATCH_SIZE=$2; shift 2 ;;
         --wait-for-pid) need_value "$@"; WAIT_FOR_PID=$2; shift 2 ;;
         --groot-branch) need_value "$@"; GROOT_BRANCH=$2; shift 2 ;;
         --arena-branch) need_value "$@"; ARENA_BRANCH=$2; shift 2 ;;
@@ -118,6 +121,10 @@ done
 
 if ! [[ "${GENERATION_SEED}" =~ ^[0-9]+$ ]]; then
     echo "--generation-seed must be a non-negative integer" >&2
+    exit 2
+fi
+if ! [[ "${GLOBAL_BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]] || [ "$((GLOBAL_BATCH_SIZE % 8))" -ne 0 ]; then
+    echo "--global-batch-size must be a positive integer divisible by 8" >&2
     exit 2
 fi
 if [ -n "${WAIT_FOR_PID}" ] && ! [[ "${WAIT_FOR_PID}" =~ ^[1-9][0-9]*$ ]]; then
@@ -163,6 +170,7 @@ Resolved v5 E2E paths
   Arena output   : ${EVAL_OUTPUT}
   state dir      : ${STATE_DIR}
   generation seed: ${GENERATION_SEED}
+  SFT global batch: ${GLOBAL_BATCH_SIZE} ($((GLOBAL_BATCH_SIZE / 8)) per GPU)
 EOF
 }
 
@@ -272,6 +280,7 @@ EXPERIMENT_NAME="${EXPERIMENT_NAME}" \
 CHECKPOINT="${CHECKPOINT}" \
 EVAL_OUTPUT="${EVAL_OUTPUT}" \
 EXPECTED_EPISODES=600 \
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE}" \
 STATE_DIR="${STATE_DIR}" \
 GROOT_BRANCH="${GROOT_BRANCH}" \
 ARENA_BRANCH="${ARENA_BRANCH}" \

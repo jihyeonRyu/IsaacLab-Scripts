@@ -22,6 +22,7 @@ CHECKPOINT="${CHECKPOINT:-${GROOT_REPO}/outputs/franka-groot-sft/${EXPERIMENT_NA
 EVAL_OUTPUT="${EVAL_OUTPUT:-${ARENA_REPO}/outputs/franka-gr00t-parallel/fixedtray-recovery-v3-8gpu-100eps}"
 GENERATION_PID="${GENERATION_PID:-}"
 EXPECTED_EPISODES="${EXPECTED_EPISODES:-600}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-128}"
 STATE_DIR="${STATE_DIR:-${WORKSPACE_ROOT}/output/franka_e2e_pipeline_fixedtray_recovery_v3}"
 
 mkdir -p "${STATE_DIR}"
@@ -144,7 +145,7 @@ if [ ! -f "${STATE_DIR}/sft.done" ]; then
     GROOT_COSMOS_MODEL_PATH="${GROOT_COSMOS_MODEL_PATH}" \
     EXPERIMENT_NAME="${EXPERIMENT_NAME}" \
     NUM_GPUS=8 \
-    GLOBAL_BATCH_SIZE=64 \
+    GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE}" \
     MAX_STEPS=10000 \
     SAVE_STEPS=250 \
     WANDB_MODE=online \
