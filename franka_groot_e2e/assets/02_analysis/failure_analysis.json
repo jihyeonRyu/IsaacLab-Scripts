@@ -1,0 +1,163 @@
+{
+  "total_failures": 51,
+  "failure_reason_counts": [
+    {
+      "failure_reason": "solver_recovery_exhausted",
+      "count": 47,
+      "pct_of_failures": 92.15686274509804
+    },
+    {
+      "failure_reason": "state_timeout",
+      "count": 3,
+      "pct_of_failures": 5.882352941176471
+    },
+    {
+      "failure_reason": "placement_verification",
+      "count": 1,
+      "pct_of_failures": 1.9607843137254901
+    }
+  ],
+  "failed_state_counts": [
+    {
+      "failed_state": "approach",
+      "count": 26,
+      "pct_of_failures": 50.98039215686274
+    },
+    {
+      "failed_state": "align_yaw",
+      "count": 9,
+      "pct_of_failures": 17.647058823529413
+    },
+    {
+      "failed_state": "move_above_slot",
+      "count": 7,
+      "pct_of_failures": 13.72549019607843
+    },
+    {
+      "failed_state": "place_descend",
+      "count": 3,
+      "pct_of_failures": 5.882352941176471
+    },
+    {
+      "failed_state": "retreat",
+      "count": 3,
+      "pct_of_failures": 5.882352941176471
+    },
+    {
+      "failed_state": "descend",
+      "count": 2,
+      "pct_of_failures": 3.9215686274509802
+    },
+    {
+      "failed_state": "solver_recovery_raise",
+      "count": 1,
+      "pct_of_failures": 1.9607843137254901
+    }
+  ],
+  "solver_recovery_outcomes": [
+    {
+      "solver_recovery_total_attempts": 0,
+      "episodes": 457,
+      "successful_episodes": 454,
+      "failed_episodes": 3,
+      "success_rate_pct": 99.34354485776805
+    },
+    {
+      "solver_recovery_total_attempts": 1,
+      "episodes": 54,
+      "successful_episodes": 53,
+      "failed_episodes": 1,
+      "success_rate_pct": 98.14814814814815
+    },
+    {
+      "solver_recovery_total_attempts": 2,
+      "episodes": 26,
+      "successful_episodes": 26,
+      "failed_episodes": 0,
+      "success_rate_pct": 100.0
+    },
+    {
+      "solver_recovery_total_attempts": 3,
+      "episodes": 54,
+      "successful_episodes": 12,
+      "failed_episodes": 42,
+      "success_rate_pct": 22.22222222222222
+    },
+    {
+      "solver_recovery_total_attempts": 4,
+      "episodes": 8,
+      "successful_episodes": 3,
+      "failed_episodes": 5,
+      "success_rate_pct": 37.5
+    },
+    {
+      "solver_recovery_total_attempts": 6,
+      "episodes": 1,
+      "successful_episodes": 1,
+      "failed_episodes": 0,
+      "success_rate_pct": 100.0
+    }
+  ],
+  "failed_states_by_blue_cube_count": [
+    {
+      "blue_cube_count": 1,
+      "failed_state": "align_yaw",
+      "count": 3
+    },
+    {
+      "blue_cube_count": 1,
+      "failed_state": "approach",
+      "count": 12
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "approach",
+      "count": 6
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "descend",
+      "count": 1
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "move_above_slot",
+      "count": 3
+    },
+    {
+      "blue_cube_count": 3,
+      "failed_state": "align_yaw",
+      "count": 6
+    },
+    {
+      "blue_cube_count": 3,
+      "failed_state": "approach",
+      "count": 8
+    },
+    {
+      "blue_cube_count": 3,
+      "failed_state": "descend",
+      "count": 1
+    },
+    {
+      "blue_cube_count": 3,
+      "failed_state": "move_above_slot",
+      "count": 4
+    },
+    {
+      "blue_cube_count": 3,
+      "failed_state": "place_descend",
+      "count": 3
+    },
+    {
+      "blue_cube_count": 3,
+      "failed_state": "retreat",
+      "count": 3
+    },
+    {
+      "blue_cube_count": 3,
+      "failed_state": "solver_recovery_raise",
+      "count": 1
+    }
+  ]
+}

@@ -1,0 +1,262 @@
+{
+  "input_root": "/workspace/output/franka_no_detour_posture_recovery_600eps_seed60007_v4",
+  "trajectory_source": "logs/states.jsonl:ee_pos_env",
+  "episodes": 600,
+  "successful_episodes": 549,
+  "failed_episodes": 51,
+  "success_rate_pct": 91.5,
+  "blue_cube_counts": [
+    1,
+    2,
+    3
+  ],
+  "scenario_statistics": [
+    {
+      "blue_cube_count": 1,
+      "episodes": 202,
+      "successful_episodes": 187,
+      "failed_episodes": 15,
+      "success_rate_pct": 92.57425742574257,
+      "trajectory_points": 76955,
+      "mean_frames": 380.96534653465346,
+      "mean_duration_s": 25.331023102310233,
+      "mean_path_length_m": 1.443783142963659,
+      "median_path_length_m": 1.2268059455682214,
+      "recovery_planned_episodes": 0,
+      "recovery_completed_episodes": 0,
+      "solver_recovery_attempts": 58,
+      "x_min_m": 0.3592437505722046,
+      "x_max_m": 0.6843502521514893,
+      "x_span_m": 0.32510650157928467,
+      "y_min_m": -0.32691800594329834,
+      "y_max_m": 0.3549196720123291,
+      "y_span_m": 0.6818376779556274,
+      "z_min_m": 0.020810015499591827,
+      "z_max_m": 0.5462921857833862,
+      "z_span_m": 0.5254821702837944
+    },
+    {
+      "blue_cube_count": 2,
+      "episodes": 205,
+      "successful_episodes": 195,
+      "failed_episodes": 10,
+      "success_rate_pct": 95.1219512195122,
+      "trajectory_points": 142527,
+      "mean_frames": 695.2536585365854,
+      "mean_duration_s": 46.28357723577236,
+      "mean_path_length_m": 2.5173415356318856,
+      "median_path_length_m": 2.2767733990837904,
+      "recovery_planned_episodes": 0,
+      "recovery_completed_episodes": 0,
+      "solver_recovery_attempts": 78,
+      "x_min_m": 0.3576009273529053,
+      "x_max_m": 0.6879382133483887,
+      "x_span_m": 0.3303372859954834,
+      "y_min_m": -0.3257787227630615,
+      "y_max_m": 0.320385217666626,
+      "y_span_m": 0.6461639404296875,
+      "z_min_m": 0.021320104598999023,
+      "z_max_m": 0.5436322093009949,
+      "z_span_m": 0.5223121047019958
+    },
+    {
+      "blue_cube_count": 3,
+      "episodes": 193,
+      "successful_episodes": 167,
+      "failed_episodes": 26,
+      "success_rate_pct": 86.52849740932642,
+      "trajectory_points": 201545,
+      "mean_frames": 1044.2746113989638,
+      "mean_duration_s": 69.55164075993092,
+      "mean_path_length_m": 3.707476657989307,
+      "median_path_length_m": 3.374478273146729,
+      "recovery_planned_episodes": 0,
+      "recovery_completed_episodes": 0,
+      "solver_recovery_attempts": 103,
+      "x_min_m": 0.3568000793457031,
+      "x_max_m": 0.7250921726226807,
+      "x_span_m": 0.36829209327697754,
+      "y_min_m": -0.3552277088165283,
+      "y_max_m": 0.32629120349884033,
+      "y_span_m": 0.6815189123153687,
+      "z_min_m": 0.021182022988796234,
+      "z_max_m": 0.5436261296272278,
+      "z_span_m": 0.5224441066384315
+    }
+  ],
+  "failure_analysis": {
+    "total_failures": 51,
+    "failure_reason_counts": [
+      {
+        "failure_reason": "solver_recovery_exhausted",
+        "count": 47,
+        "pct_of_failures": 92.15686274509804
+      },
+      {
+        "failure_reason": "state_timeout",
+        "count": 3,
+        "pct_of_failures": 5.882352941176471
+      },
+      {
+        "failure_reason": "placement_verification",
+        "count": 1,
+        "pct_of_failures": 1.9607843137254901
+      }
+    ],
+    "failed_state_counts": [
+      {
+        "failed_state": "approach",
+        "count": 26,
+        "pct_of_failures": 50.98039215686274
+      },
+      {
+        "failed_state": "align_yaw",
+        "count": 9,
+        "pct_of_failures": 17.647058823529413
+      },
+      {
+        "failed_state": "move_above_slot",
+        "count": 7,
+        "pct_of_failures": 13.72549019607843
+      },
+      {
+        "failed_state": "place_descend",
+        "count": 3,
+        "pct_of_failures": 5.882352941176471
+      },
+      {
+        "failed_state": "retreat",
+        "count": 3,
+        "pct_of_failures": 5.882352941176471
+      },
+      {
+        "failed_state": "descend",
+        "count": 2,
+        "pct_of_failures": 3.9215686274509802
+      },
+      {
+        "failed_state": "solver_recovery_raise",
+        "count": 1,
+        "pct_of_failures": 1.9607843137254901
+      }
+    ],
+    "solver_recovery_outcomes": [
+      {
+        "solver_recovery_total_attempts": 0,
+        "episodes": 457,
+        "successful_episodes": 454,
+        "failed_episodes": 3,
+        "success_rate_pct": 99.34354485776805
+      },
+      {
+        "solver_recovery_total_attempts": 1,
+        "episodes": 54,
+        "successful_episodes": 53,
+        "failed_episodes": 1,
+        "success_rate_pct": 98.14814814814815
+      },
+      {
+        "solver_recovery_total_attempts": 2,
+        "episodes": 26,
+        "successful_episodes": 26,
+        "failed_episodes": 0,
+        "success_rate_pct": 100.0
+      },
+      {
+        "solver_recovery_total_attempts": 3,
+        "episodes": 54,
+        "successful_episodes": 12,
+        "failed_episodes": 42,
+        "success_rate_pct": 22.22222222222222
+      },
+      {
+        "solver_recovery_total_attempts": 4,
+        "episodes": 8,
+        "successful_episodes": 3,
+        "failed_episodes": 5,
+        "success_rate_pct": 37.5
+      },
+      {
+        "solver_recovery_total_attempts": 6,
+        "episodes": 1,
+        "successful_episodes": 1,
+        "failed_episodes": 0,
+        "success_rate_pct": 100.0
+      }
+    ],
+    "failed_states_by_blue_cube_count": [
+      {
+        "blue_cube_count": 1,
+        "failed_state": "align_yaw",
+        "count": 3
+      },
+      {
+        "blue_cube_count": 1,
+        "failed_state": "approach",
+        "count": 12
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "approach",
+        "count": 6
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "descend",
+        "count": 1
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "move_above_slot",
+        "count": 3
+      },
+      {
+        "blue_cube_count": 3,
+        "failed_state": "align_yaw",
+        "count": 6
+      },
+      {
+        "blue_cube_count": 3,
+        "failed_state": "approach",
+        "count": 8
+      },
+      {
+        "blue_cube_count": 3,
+        "failed_state": "descend",
+        "count": 1
+      },
+      {
+        "blue_cube_count": 3,
+        "failed_state": "move_above_slot",
+        "count": 4
+      },
+      {
+        "blue_cube_count": 3,
+        "failed_state": "place_descend",
+        "count": 3
+      },
+      {
+        "blue_cube_count": 3,
+        "failed_state": "retreat",
+        "count": 3
+      },
+      {
+        "blue_cube_count": 3,
+        "failed_state": "solver_recovery_raise",
+        "count": 1
+      }
+    ]
+  },
+  "skipped_episodes": [],
+  "outputs": {
+    "trajectory_distribution": "trajectory_distribution.png",
+    "trajectory_by_blue_cube_count": "trajectory_by_blue_cube_count.png",
+    "scenario_statistics": "scenario_statistics.png",
+    "failure_analysis": "failure_analysis.png",
+    "failure_analysis_json": "failure_analysis.json",
+    "episode_metrics": "episode_metrics.csv",
+    "scenario_success": "scenario_success.csv",
+    "failure_causes": "failure_causes.csv",
+    "solver_recovery_outcomes": "solver_recovery_outcomes.csv"
+  }
+}

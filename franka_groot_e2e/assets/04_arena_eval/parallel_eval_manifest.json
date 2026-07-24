@@ -1,5 +1,10 @@
 {
-  "checkpoint": "/workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-sft-crop098-aug-v2/checkpoint-10000",
+  "arena_package_versions": {
+    "isaaclab": "3.0.0b2.post1",
+    "isaacsim": "6.0.1.0"
+  },
+  "arena_python": "/workspace/env_isaaclab/bin/python",
+  "checkpoint": "/workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-sft-fixedtray-no-detour-recovery-v4/checkpoint-10000",
   "cosmos_model_path": "/workspace/models/Cosmos-Reason2-2B",
   "episode_counts_by_rank": [
     13,
@@ -34,6 +39,11 @@
     5662
   ],
   "rtx_kit_args": "--/rtx/hydra/progressiveSceneLoad=false --/rtx/hydra/geometrySyncLoads=true --/rtx-transient/hydra/geometrystreaming/syncLoad=true",
+  "selected_tasks": [
+    "franka_blue_tray_1_cube",
+    "franka_blue_tray_2_cubes",
+    "franka_blue_tray_3_cubes"
+  ],
   "task_base_seeds": {
     "franka_blue_tray_1_cube": 10007,
     "franka_blue_tray_2_cubes": 20007,
