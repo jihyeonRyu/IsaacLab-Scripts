@@ -11,6 +11,12 @@ STATE_DIR="${STATE_DIR:-/workspace/output/franka_e2e_pipeline_no_detour_recovery
 GENERATION_SEED="${GENERATION_SEED:-60007}"
 WAIT_FOR_PID="${WAIT_FOR_PID:-}"
 
+export OMNI_KIT_ACCEPT_EULA="${OMNI_KIT_ACCEPT_EULA:-YES}"
+export ACCEPT_EULA="${ACCEPT_EULA:-Y}"
+export PRIVACY_CONSENT="${PRIVACY_CONSENT:-Y}"
+export LD_LIBRARY_PATH="/workspace/.tools/isaac-system-libs/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+export PYTHONUNBUFFERED=1
+
 if [ -n "${WAIT_FOR_PID}" ]; then
     printf '[%s] waiting for PID %s before v4 generation\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${WAIT_FOR_PID}"
