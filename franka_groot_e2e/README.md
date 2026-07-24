@@ -326,6 +326,24 @@ The completed v4 generation produced 549 successful episodes from 600 attempts
 and 167/193 for three cubes. No episode planned or executed an off-target
 waypoint.
 
+### v5 waypoint-10% / one-retry ablation
+
+`run_v5_waypoint10_recovery1.sh` restores the short pre-grasp off-target
+waypoint for 10% of targets and limits failure-triggered solver recovery to one
+attempt per cube. It uses generation seed 70007 and separate raw, LeRobot,
+checkpoint, pipeline-state, and Arena output paths.
+
+```bash
+cd /workspace/IsaacLab-Scripts
+
+nohup bash franka_groot_e2e/run_v5_waypoint10_recovery1.sh \
+  > /workspace/output/franka_e2e_pipeline_waypoint10_recovery1_v5.log 2>&1 &
+```
+
+The detached command automatically runs 600-episode generation, trajectory
+analysis, successful-episode LeRobot conversion, 8-GPU GR00T SFT, and the
+aligned 8-GPU Arena evaluation with 100 episodes for each cube count.
+
 Vectorized generation samples loose objects against each environment slot's
 actual fixed tray pose; it never shifts only the tray metadata after sampling.
 The yaw-conservative object footprint is checked again after vector asset-size
