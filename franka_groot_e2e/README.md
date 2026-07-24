@@ -15,7 +15,9 @@ datasets remain outside Git.
 ```text
 franka_groot_e2e/
 ├── README.md
-├── run_pipeline.sh      # resumable detached generation → analysis → SFT → eval supervisor
+├── install_franka_groot_e2e.sh       # path-aware one-shot installer
+├── run_pipeline.sh                    # resumable stage supervisor
+├── run_v5_waypoint10_recovery1.sh     # complete v5 launcher
 ├── scripts/
 │   ├── 01_generate/     # Isaac Lab generation and trajectory analysis
 │   └── 02_convert/      # Isaac output → LeRobot v2.1
@@ -51,7 +53,52 @@ The bundled assets are compact evidence from one internally consistent run:
 4. Fine-tune GR00T N1.7 on eight GPUs with W&B online logging.
 5. Run 100 Arena episodes per task on eight GPUs and review the bundled report.
 
-## Prepared paths
+### One-command install and launch at a customer-selected path
+
+Clone only this script repository first, then let the installer clone the two
+verified implementation branches, create all three isolated environments, and
+download both public models. `--workspace-root` controls every unspecified
+repo, model, venv, dataset, checkpoint, and evaluation path. Individual path
+flags are available when a customer needs a split filesystem.
+
+```bash
+CUSTOM_ROOT=/data/franka-groot
+mkdir -p "${CUSTOM_ROOT}"
+
+git clone --branch main --single-branch \
+  https://github.com/jihyeonRyu/IsaacLab-Scripts.git \
+  "${CUSTOM_ROOT}/IsaacLab-Scripts"
+
+bash "${CUSTOM_ROOT}/IsaacLab-Scripts/franka_groot_e2e/install_franka_groot_e2e.sh" \
+  --workspace-root "${CUSTOM_ROOT}" \
+  --scripts-repo "${CUSTOM_ROOT}/IsaacLab-Scripts" \
+  --accept-eula
+
+source "${CUSTOM_ROOT}/franka_groot_env.sh"
+"${GROOT_REPO}/.venv/bin/wandb" login
+
+nohup bash "${SCRIPTS_REPO}/franka_groot_e2e/run_v5_waypoint10_recovery1.sh" \
+  --workspace-root "${CUSTOM_ROOT}" \
+  --scripts-repo "${SCRIPTS_REPO}" \
+  > "${CUSTOM_ROOT}/output/franka_e2e_pipeline_waypoint10_recovery1_v5.log" 2>&1 &
+```
+
+Preview resolved paths without installing or starting a job:
+
+```bash
+bash franka_groot_e2e/install_franka_groot_e2e.sh \
+  --workspace-root /data/customer-a/franka --print-config
+bash franka_groot_e2e/run_v5_waypoint10_recovery1.sh \
+  --workspace-root /data/customer-a/franka --print-config
+```
+
+For nonstandard layouts, both scripts accept `--groot-repo`, `--arena-repo`,
+`--models-root`, and Python-path overrides. The launcher additionally accepts
+raw/LeRobot/checkpoint/evaluation output overrides. Existing nonempty non-Git
+paths are never overwritten, and an existing checkout must already be on the
+expected branch.
+
+## Prepared default paths
 
 - Synthetic generator: `/workspace/IsaacLab-Scripts/franka_groot_e2e/scripts/01_generate/franka_lift_auto_parallel.py`
 - Dataset converter: `/workspace/IsaacLab-Scripts/franka_groot_e2e/scripts/02_convert/convert_franka_to_groot_lerobot.py`
@@ -62,7 +109,10 @@ The bundled assets are compact evidence from one internally consistent run:
 - Cosmos Reason2: `/workspace/models/Cosmos-Reason2-2B`
 - Hugging Face cache: `/workspace/models/huggingface-cache`
 
-Both venv activation scripts include the local native libraries required by this container. The GR00T venv also sets `HF_HOME` and `GROOT_COSMOS_MODEL_PATH` when they are not already set.
+These are defaults only. Passing `--workspace-root` changes all of them, and the
+installer writes the resolved values to `<workspace-root>/franka_groot_env.sh`.
+The GR00T runtime receives `HF_HOME`, `BASE_MODEL_PATH`, and
+`GROOT_COSMOS_MODEL_PATH` explicitly from the supervisor.
 
 ### Detached sequential execution
 
@@ -83,6 +133,49 @@ The Docker container and its host server must remain running; shutting down
 either one stops all processes.
 
 ## 0. Rebuild the Docker environments
+
+The supported fast path is the one-shot installer above:
+
+```bash
+bash franka_groot_e2e/install_franka_groot_e2e.sh \
+  --workspace-root /your/persistent/path \
+  --scripts-repo /path/to/IsaacLab-Scripts \
+  --accept-eula
+```
+
+It installs OS libraries unless `--skip-system-packages` is supplied, validates
+Python 3.12 and repository branches, creates the Isaac/GR00T/Arena environments,
+runs dependency checks, downloads both public models unless
+`--skip-model-download` is supplied, and writes a sourceable path file. It does
+not persist Hugging Face or W&B tokens. The remaining subsections show the same
+steps manually for debugging and auditing.
+
+### Docker image recommendation
+
+The completed local E2E jobs did **not** run inside the currently running VS Code
+sidecar. They ran on the Ubuntu 24.04 host with eight RTX PRO 6000 Blackwell GPUs
+and NVIDIA driver 595.71.05. Docker Compose currently also has this development
+image running:
+
+```text
+isaac-lab-vscode:latest
+sha256:a9eed40147f216b910a88352372fcb9b243978a4759a2ec7ffdd9909b555a7e6
+```
+
+That sidecar does not mount this host's `/workspace`, and `latest` is mutable,
+so it is not a sufficient customer reproduction reference. For delivery, use a
+customer-built, digest-pinned Ubuntu 24.04 NVIDIA GPU image with a CUDA
+12.8-compatible userspace (the GR00T lock uses PyTorch `+cu128`), then run the
+one-shot installer inside it. Expose all GPUs with NVIDIA Container Toolkit,
+mount the selected workspace path as persistent storage, use `--ipc=host` (or a
+large shared-memory allocation), and preserve the Isaac/RTX device access. The
+host driver may be newer than the container CUDA runtime; the host CUDA toolkit
+version is not the dependency source for these venvs.
+
+If the existing `isaac-lab-vscode` image is used as a starting point, pin the
+shown digest and add the customer's workspace mount explicitly. Still keep the
+three venvs isolated: preinstalled Isaac or PyTorch packages in a mutable dev
+image must not replace the lockfile/pip environments documented here.
 
 Do not install the full workflow into one Python environment. The working
 container uses three isolated Python 3.12 environments because the GR00T and
@@ -337,6 +430,7 @@ checkpoint, pipeline-state, and Arena output paths.
 cd /workspace/IsaacLab-Scripts
 
 nohup bash franka_groot_e2e/run_v5_waypoint10_recovery1.sh \
+  --workspace-root /workspace \
   > /workspace/output/franka_e2e_pipeline_waypoint10_recovery1_v5.log 2>&1 &
 ```
 
@@ -646,7 +740,17 @@ Open [the bundled Arena HTML report](assets/04_arena_eval/index.html) for the
 full per-rank browser view.
 
 The checkpoint predicts a 40-action horizon. Arena executes the first 16 actions
-(`action_chunk_length=16`) before requesting a new chunk.
+(`action_chunk_length=16`) before requesting a new chunk. This `16` is an action
+count, not 16 Hz. Each action advances at `policy_hz=15`, matching the 15 FPS
+training data, while 60 Hz control interpolation supplies four control steps per
+policy action. Consequently Arena replans after about `16/15 = 1.07` seconds.
+
+A 24-action training horizon is a reasonable later ablation (1.6 seconds at
+15 Hz), but v5 deliberately keeps 40 so its only data-policy changes are the
+10% successful pre-grasp waypoint and one recovery attempt. Changing horizon to
+24 in the same run would confound that comparison. If v5 establishes a baseline,
+run a separate v6 with only the training horizon changed while retaining Arena's
+16-action execution chunk.
 
 ### Recommended next collection
 

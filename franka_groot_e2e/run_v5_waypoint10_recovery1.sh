@@ -2,19 +2,202 @@
 
 set -Eeuo pipefail
 
-SCRIPTS_REPO="${SCRIPTS_REPO:-/workspace/IsaacLab-Scripts}"
-RAW_DATASET="${RAW_DATASET:-/workspace/output/franka_waypoint10_recovery1_600eps_seed70007_v5}"
-LEROBOT_DATASET="${LEROBOT_DATASET:-/workspace/datasets/franka_waypoint10_recovery1_seed70007_v5_lerobot}"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_SCRIPTS_REPO="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
+
+WORKSPACE_ROOT="${WORKSPACE_ROOT:-/workspace}"
+SCRIPTS_REPO="${SCRIPTS_REPO:-}"
+GROOT_REPO="${GROOT_REPO:-}"
+ARENA_REPO="${ARENA_REPO:-}"
+MODELS_ROOT="${MODELS_ROOT:-}"
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-}"
+GROOT_COSMOS_MODEL_PATH="${GROOT_COSMOS_MODEL_PATH:-}"
+HF_HOME="${HF_HOME:-}"
+ISAAC_PYTHON="${ISAAC_PYTHON:-}"
+ARENA_PYTHON="${ARENA_PYTHON:-}"
+GROOT_PYTHON="${GROOT_PYTHON:-}"
+RAW_DATASET="${RAW_DATASET:-}"
+LEROBOT_DATASET="${LEROBOT_DATASET:-}"
 EXPERIMENT_NAME="${EXPERIMENT_NAME:-franka-blue-cube-sft-fixedtray-waypoint10-recovery1-v5}"
-EVAL_OUTPUT="${EVAL_OUTPUT:-/workspace/IsaacLab-Arena/outputs/franka-gr00t-parallel/fixedtray-waypoint10-recovery1-v5-generation-aligned-8gpu-100eps}"
-STATE_DIR="${STATE_DIR:-/workspace/output/franka_e2e_pipeline_waypoint10_recovery1_v5}"
+CHECKPOINT="${CHECKPOINT:-}"
+EVAL_OUTPUT="${EVAL_OUTPUT:-}"
+STATE_DIR="${STATE_DIR:-}"
 GENERATION_SEED="${GENERATION_SEED:-70007}"
 WAIT_FOR_PID="${WAIT_FOR_PID:-}"
+GROOT_BRANCH="${GROOT_BRANCH:-jryu/franka-demo}"
+ARENA_BRANCH="${ARENA_BRANCH:-jryu/franka-demo}"
+PRINT_CONFIG=0
+
+usage() {
+    cat <<'EOF'
+Run the v5 Franka 8-GPU E2E ablation: generate → analyze → convert → SFT → Arena.
+
+Usage:
+  run_v5_waypoint10_recovery1.sh [options]
+
+Common path options:
+  --workspace-root PATH  Parent used for all unspecified paths (default: /workspace)
+  --scripts-repo PATH    IsaacLab-Scripts checkout
+  --groot-repo PATH      Isaac-GR00T checkout
+  --arena-repo PATH      IsaacLab-Arena checkout
+  --models-root PATH     Parent containing both local models and HF cache
+  --isaac-python PATH    Isaac generation/Arena-worker Python
+  --arena-python PATH    Arena-worker Python (default: ISAAC_PYTHON)
+  --groot-python PATH    GR00T conversion/server Python
+
+Output overrides:
+  --raw-dataset PATH
+  --lerobot-dataset PATH
+  --experiment-name NAME
+  --checkpoint PATH
+  --eval-output PATH
+  --state-dir PATH
+  --generation-seed N
+  --wait-for-pid PID
+
+Advanced model overrides:
+  --base-model-path PATH
+  --cosmos-model-path PATH
+  --hf-home PATH
+  --groot-branch NAME
+  --arena-branch NAME
+
+Other:
+  --print-config         Resolve and print every path without starting work
+  -h, --help             Show this help
+
+Fixed v5 experiment settings:
+  600 attempts, seed 70007 by default, waypoint probability 0.10,
+  waypoint radius 4–8 cm, and one solver-recovery attempt per cube.
+  GR00T predicts 40 actions; Arena executes 16 actions at the dataset's 15 Hz.
+EOF
+}
+
+need_value() {
+    if [ "$#" -lt 2 ] || [ -z "$2" ]; then
+        echo "Missing value for $1" >&2
+        exit 2
+    fi
+}
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --workspace-root) need_value "$@"; WORKSPACE_ROOT=$2; shift 2 ;;
+        --scripts-repo) need_value "$@"; SCRIPTS_REPO=$2; shift 2 ;;
+        --groot-repo) need_value "$@"; GROOT_REPO=$2; shift 2 ;;
+        --arena-repo) need_value "$@"; ARENA_REPO=$2; shift 2 ;;
+        --models-root) need_value "$@"; MODELS_ROOT=$2; shift 2 ;;
+        --base-model-path) need_value "$@"; BASE_MODEL_PATH=$2; shift 2 ;;
+        --cosmos-model-path) need_value "$@"; GROOT_COSMOS_MODEL_PATH=$2; shift 2 ;;
+        --hf-home) need_value "$@"; HF_HOME=$2; shift 2 ;;
+        --isaac-python) need_value "$@"; ISAAC_PYTHON=$2; shift 2 ;;
+        --arena-python) need_value "$@"; ARENA_PYTHON=$2; shift 2 ;;
+        --groot-python) need_value "$@"; GROOT_PYTHON=$2; shift 2 ;;
+        --raw-dataset) need_value "$@"; RAW_DATASET=$2; shift 2 ;;
+        --lerobot-dataset) need_value "$@"; LEROBOT_DATASET=$2; shift 2 ;;
+        --experiment-name) need_value "$@"; EXPERIMENT_NAME=$2; shift 2 ;;
+        --checkpoint) need_value "$@"; CHECKPOINT=$2; shift 2 ;;
+        --eval-output) need_value "$@"; EVAL_OUTPUT=$2; shift 2 ;;
+        --state-dir) need_value "$@"; STATE_DIR=$2; shift 2 ;;
+        --generation-seed) need_value "$@"; GENERATION_SEED=$2; shift 2 ;;
+        --wait-for-pid) need_value "$@"; WAIT_FOR_PID=$2; shift 2 ;;
+        --groot-branch) need_value "$@"; GROOT_BRANCH=$2; shift 2 ;;
+        --arena-branch) need_value "$@"; ARENA_BRANCH=$2; shift 2 ;;
+        --print-config) PRINT_CONFIG=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+    esac
+done
+
+if ! [[ "${GENERATION_SEED}" =~ ^[0-9]+$ ]]; then
+    echo "--generation-seed must be a non-negative integer" >&2
+    exit 2
+fi
+if [ -n "${WAIT_FOR_PID}" ] && ! [[ "${WAIT_FOR_PID}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "--wait-for-pid must be a positive integer" >&2
+    exit 2
+fi
+
+WORKSPACE_ROOT="$(realpath -m -- "${WORKSPACE_ROOT}")"
+SCRIPTS_REPO="$(realpath -m -- "${SCRIPTS_REPO:-${DEFAULT_SCRIPTS_REPO}}")"
+GROOT_REPO="$(realpath -m -- "${GROOT_REPO:-${WORKSPACE_ROOT}/Isaac-GR00T}")"
+ARENA_REPO="$(realpath -m -- "${ARENA_REPO:-${WORKSPACE_ROOT}/IsaacLab-Arena}")"
+MODELS_ROOT="$(realpath -m -- "${MODELS_ROOT:-${WORKSPACE_ROOT}/models}")"
+BASE_MODEL_PATH="$(realpath -m -- "${BASE_MODEL_PATH:-${MODELS_ROOT}/GR00T-N1.7-3B}")"
+GROOT_COSMOS_MODEL_PATH="$(realpath -m -- "${GROOT_COSMOS_MODEL_PATH:-${MODELS_ROOT}/Cosmos-Reason2-2B}")"
+HF_HOME="$(realpath -m -- "${HF_HOME:-${MODELS_ROOT}/huggingface-cache}")"
+ISAAC_PYTHON="$(realpath -m -- "${ISAAC_PYTHON:-${WORKSPACE_ROOT}/env_isaaclab/bin/python}")"
+ARENA_PYTHON="$(realpath -m -- "${ARENA_PYTHON:-${ISAAC_PYTHON}}")"
+GROOT_PYTHON="$(realpath -m -- "${GROOT_PYTHON:-${GROOT_REPO}/.venv/bin/python}")"
+RAW_DATASET="$(realpath -m -- "${RAW_DATASET:-${WORKSPACE_ROOT}/output/franka_waypoint10_recovery1_600eps_seed${GENERATION_SEED}_v5}")"
+LEROBOT_DATASET="$(realpath -m -- "${LEROBOT_DATASET:-${WORKSPACE_ROOT}/datasets/franka_waypoint10_recovery1_seed${GENERATION_SEED}_v5_lerobot}")"
+CHECKPOINT="$(realpath -m -- "${CHECKPOINT:-${GROOT_REPO}/outputs/franka-groot-sft/${EXPERIMENT_NAME}/checkpoint-10000}")"
+EVAL_OUTPUT="$(realpath -m -- "${EVAL_OUTPUT:-${ARENA_REPO}/outputs/franka-gr00t-parallel/fixedtray-waypoint10-recovery1-v5-generation-aligned-8gpu-100eps}")"
+STATE_DIR="$(realpath -m -- "${STATE_DIR:-${WORKSPACE_ROOT}/output/franka_e2e_pipeline_waypoint10_recovery1_v5}")"
+
+print_config() {
+    cat <<EOF
+Resolved v5 E2E paths
+  workspace root : ${WORKSPACE_ROOT}
+  scripts repo   : ${SCRIPTS_REPO}
+  GR00T repo     : ${GROOT_REPO}
+  Arena repo     : ${ARENA_REPO}
+  models root    : ${MODELS_ROOT}
+  GR00T model    : ${BASE_MODEL_PATH}
+  Cosmos model   : ${GROOT_COSMOS_MODEL_PATH}
+  HF cache       : ${HF_HOME}
+  Isaac Python   : ${ISAAC_PYTHON}
+  Arena Python   : ${ARENA_PYTHON}
+  GR00T Python   : ${GROOT_PYTHON}
+  raw dataset    : ${RAW_DATASET}
+  LeRobot output : ${LEROBOT_DATASET}
+  experiment     : ${EXPERIMENT_NAME}
+  checkpoint     : ${CHECKPOINT}
+  Arena output   : ${EVAL_OUTPUT}
+  state dir      : ${STATE_DIR}
+  generation seed: ${GENERATION_SEED}
+EOF
+}
+
+print_config
+if [ "${PRINT_CONFIG}" = "1" ]; then
+    exit 0
+fi
+
+for required_path in \
+    "${ISAAC_PYTHON}" \
+    "${ARENA_PYTHON}" \
+    "${GROOT_PYTHON}" \
+    "${BASE_MODEL_PATH}/config.json" \
+    "${GROOT_COSMOS_MODEL_PATH}/config.json" \
+    "${SCRIPTS_REPO}/franka_groot_e2e/run_pipeline.sh" \
+    "${SCRIPTS_REPO}/franka_groot_e2e/scripts/01_generate/franka_lift_auto_parallel.py" \
+    "${ARENA_REPO}/isaaclab_arena_gr00t/parallel_evaluation.py"; do
+    if [ ! -e "${required_path}" ]; then
+        echo "Required path does not exist: ${required_path}" >&2
+        exit 2
+    fi
+done
+if [ "$(git -C "${GROOT_REPO}" branch --show-current)" != "${GROOT_BRANCH}" ]; then
+    echo "GR00T repo must be on ${GROOT_BRANCH}" >&2
+    exit 2
+fi
+if [ "$(git -C "${ARENA_REPO}" branch --show-current)" != "${ARENA_BRANCH}" ]; then
+    echo "Arena repo must be on ${ARENA_BRANCH}" >&2
+    exit 2
+fi
+if ! "${GROOT_REPO}/.venv/bin/wandb" login --verify >/dev/null 2>&1; then
+    echo "W&B login verification failed. Run: ${GROOT_REPO}/.venv/bin/wandb login" >&2
+    exit 3
+fi
 
 export OMNI_KIT_ACCEPT_EULA="${OMNI_KIT_ACCEPT_EULA:-YES}"
 export ACCEPT_EULA="${ACCEPT_EULA:-Y}"
 export PRIVACY_CONSENT="${PRIVACY_CONSENT:-Y}"
-export LD_LIBRARY_PATH="/workspace/.tools/isaac-system-libs/usr/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+LOCAL_ISAAC_LIB="${WORKSPACE_ROOT}/.tools/isaac-system-libs/usr/lib/x86_64-linux-gnu"
+if [ -d "${LOCAL_ISAAC_LIB}" ]; then
+    export LD_LIBRARY_PATH="${LOCAL_ISAAC_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
 export PYTHONUNBUFFERED=1
 
 if [ -n "${WAIT_FOR_PID}" ]; then
@@ -31,7 +214,7 @@ if [ ! -f "${RAW_DATASET}/multi_gpu_summary.json" ]; then
         exit 2
     fi
 
-    /workspace/env_isaaclab/bin/python \
+    "${ISAAC_PYTHON}" \
         "${SCRIPTS_REPO}/franka_groot_e2e/scripts/01_generate/franka_lift_auto_parallel.py" \
         --headless \
         --enable_cameras \
@@ -58,11 +241,24 @@ if [ ! -f "${RAW_DATASET}/multi_gpu_summary.json" ]; then
         --solver_recovery_max_attempts 1
 fi
 
+WORKSPACE_ROOT="${WORKSPACE_ROOT}" \
+SCRIPTS_REPO="${SCRIPTS_REPO}" \
+GROOT_REPO="${GROOT_REPO}" \
+ARENA_REPO="${ARENA_REPO}" \
+MODELS_ROOT="${MODELS_ROOT}" \
+BASE_MODEL_PATH="${BASE_MODEL_PATH}" \
+GROOT_COSMOS_MODEL_PATH="${GROOT_COSMOS_MODEL_PATH}" \
+HF_HOME="${HF_HOME}" \
+ISAAC_PYTHON="${ISAAC_PYTHON}" \
+ARENA_PYTHON="${ARENA_PYTHON}" \
+GROOT_PYTHON="${GROOT_PYTHON}" \
 RAW_DATASET="${RAW_DATASET}" \
 LEROBOT_DATASET="${LEROBOT_DATASET}" \
 EXPERIMENT_NAME="${EXPERIMENT_NAME}" \
-CHECKPOINT="/workspace/Isaac-GR00T/outputs/franka-groot-sft/${EXPERIMENT_NAME}/checkpoint-10000" \
+CHECKPOINT="${CHECKPOINT}" \
 EVAL_OUTPUT="${EVAL_OUTPUT}" \
 EXPECTED_EPISODES=600 \
 STATE_DIR="${STATE_DIR}" \
+GROOT_BRANCH="${GROOT_BRANCH}" \
+ARENA_BRANCH="${ARENA_BRANCH}" \
 exec bash "${SCRIPTS_REPO}/franka_groot_e2e/run_pipeline.sh"
