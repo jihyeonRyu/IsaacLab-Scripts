@@ -285,6 +285,30 @@ Current generation defaults:
 - solver recovery allows up to 3 retries per cube before marking the episode failed;
 - when domain randomization is enabled, each background RGB channel is sampled independently over the full `[0, 1]` range; task lighting remains near-neutral.
 
+### v4 no-detour ablation
+
+The v4 ablation removes the deliberate pre-grasp off-target waypoint while
+retaining randomized collision-safe start poses, post-yaw recentering, and
+failure-triggered solver recovery. It uses a new generation seed and separate
+raw dataset, LeRobot dataset, checkpoint, pipeline state, and Arena output so
+the v3 result remains a valid baseline.
+
+To wait for an existing Arena evaluation and then run generation, analysis,
+conversion, 8-GPU SFT, and the 300-episode Arena evaluation:
+
+```bash
+cd /workspace/IsaacLab-Scripts
+
+nohup env WAIT_FOR_PID=<arena-launcher-pid> \
+  bash franka_groot_e2e/run_v4_no_detour.sh \
+  > /workspace/output/franka_e2e_pipeline_no_detour_recovery_v4.log 2>&1 &
+```
+
+The only deliberate-trajectory augmentation change is
+`--recovery_waypoint_prob 0.0`. Actual failure-triggered recovery remains
+enabled with up to three attempts per cube, and only successful episodes are
+retained by the LeRobot conversion stage.
+
 Vectorized generation samples loose objects against each environment slot's
 actual fixed tray pose; it never shifts only the tray metadata after sampling.
 The yaw-conservative object footprint is checked again after vector asset-size
