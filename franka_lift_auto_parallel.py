@@ -144,14 +144,14 @@ def add_args() -> argparse.ArgumentParser:
     parser.add_argument("--cube_size", type=float, default=0.05, help="Legacy fixed size used when domain randomization is disabled.")
     parser.add_argument("--cube_size_range", type=float, nargs=2, default=(0.05, 0.065), metavar=("MIN", "MAX"), help="Per-axis cuboid size range in meters.")
     parser.add_argument("--min_spawn_spacing", type=float, default=0.04)
-    # Conservative SeattleLabTable top envelope. Sampling subtracts each
-    # object's half extents, so the complete cube/tray remains inside it.
+    # Safe SeattleLabTable top envelope. Sampling subtracts each object's half
+    # extents, so the complete cube/tray remains inside it.
     parser.add_argument("--workspace_x_min", type=float, default=0.33)
-    parser.add_argument("--workspace_x_max", type=float, default=0.62)
-    parser.add_argument("--workspace_y_min", type=float, default=-0.30)
-    parser.add_argument("--workspace_y_max", type=float, default=0.30)
+    parser.add_argument("--workspace_x_max", type=float, default=0.70)
+    parser.add_argument("--workspace_y_min", type=float, default=-0.34)
+    parser.add_argument("--workspace_y_max", type=float, default=0.34)
     parser.add_argument(
-        "--workspace_radius_max", type=float, default=0.66,
+        "--workspace_radius_max", type=float, default=0.68,
         help="Maximum XY distance from the robot base for loose objects and tray centers.",
     )
     parser.add_argument("--cube_z", type=float, default=0.026)
@@ -257,6 +257,12 @@ def add_args() -> argparse.ArgumentParser:
     parser.add_argument("--auto_pick_step", type=float, default=0.0375)
     parser.add_argument("--auto_pick_descend_step", type=float, default=0.015)
     parser.add_argument("--auto_pick_tolerance", type=float, default=0.012)
+    parser.add_argument(
+        "--auto_pick_recenter_tolerance",
+        type=float,
+        default=0.006,
+        help="Tighter Cartesian tolerance used to re-center above a cube after yaw alignment.",
+    )
     parser.add_argument("--auto_pick_approach_height", type=float, default=0.10)
     parser.add_argument("--auto_pick_lift_height", type=float, default=0.16)
     parser.add_argument(
@@ -285,9 +291,15 @@ def add_args() -> argparse.ArgumentParser:
             "The pre-roll translates only, preserving the validated floor-facing tool orientation."
         ),
     )
-    parser.add_argument("--start_ee_x_range", type=float, nargs=2, default=(0.36, 0.54), metavar=("MIN", "MAX"))
-    parser.add_argument("--start_ee_y_range", type=float, nargs=2, default=(-0.18, 0.18), metavar=("MIN", "MAX"))
-    parser.add_argument("--start_ee_z_range", type=float, nargs=2, default=(0.34, 0.48), metavar=("MIN", "MAX"))
+    parser.add_argument("--start_ee_x_range", type=float, nargs=2, default=(0.33, 0.70), metavar=("MIN", "MAX"))
+    parser.add_argument("--start_ee_y_range", type=float, nargs=2, default=(-0.34, 0.34), metavar=("MIN", "MAX"))
+    parser.add_argument("--start_ee_z_range", type=float, nargs=2, default=(0.25, 0.55), metavar=("MIN", "MAX"))
+    parser.add_argument(
+        "--start_ee_radius_max",
+        type=float,
+        default=0.72,
+        help="Maximum XY radius for the higher, collision-free randomized start EEF pose.",
+    )
     parser.add_argument("--start_pose_step", type=float, default=0.03)
     parser.add_argument("--start_pose_tolerance", type=float, default=0.012)
     parser.add_argument("--start_pose_timeout_steps", type=int, default=480)
@@ -301,21 +313,21 @@ def add_args() -> argparse.ArgumentParser:
     parser.add_argument(
         "--recovery_waypoint_prob",
         type=float,
-        default=0.20,
+        default=0.10,
         help="Probability per blue-cube target of visiting a nearby random waypoint before direct approach.",
     )
     parser.add_argument(
         "--recovery_waypoint_radius_range",
         type=float,
         nargs=2,
-        default=(0.08, 0.16),
+        default=(0.04, 0.08),
         metavar=("MIN", "MAX"),
     )
     parser.add_argument(
         "--recovery_waypoint_height_range",
         type=float,
         nargs=2,
-        default=(0.14, 0.24),
+        default=(0.12, 0.18),
         metavar=("MIN", "MAX"),
         help="Recovery waypoint height above the target cube center in meters.",
     )
@@ -605,6 +617,8 @@ if args_cli.workspace_x_max <= args_cli.workspace_x_min or args_cli.workspace_y_
     parser.error("workspace max bounds must be greater than min bounds.")
 if args_cli.workspace_radius_max <= 0:
     parser.error("--workspace_radius_max must be > 0.")
+if args_cli.start_ee_radius_max <= 0:
+    parser.error("--start_ee_radius_max must be > 0.")
 if args_cli.cube_size <= 0:
     parser.error("--cube_size must be > 0.")
 if args_cli.cube_size_range[0] <= 0 or args_cli.cube_size_range[1] < args_cli.cube_size_range[0]:
@@ -621,8 +635,15 @@ if args_cli.tray_size[0] <= 0 or args_cli.tray_size[1] <= 0:
     parser.error("--tray_size values must be > 0.")
 if args_cli.auto_generate_episodes < 0:
     parser.error("--auto_generate_episodes must be >= 0.")
-if args_cli.auto_pick_step <= 0 or args_cli.auto_pick_descend_step <= 0 or args_cli.auto_pick_tolerance <= 0:
+if (
+    args_cli.auto_pick_step <= 0
+    or args_cli.auto_pick_descend_step <= 0
+    or args_cli.auto_pick_tolerance <= 0
+    or args_cli.auto_pick_recenter_tolerance <= 0
+):
     parser.error("automatic pick motion step/tolerance values must be > 0.")
+if float(args_cli.auto_pick_recenter_tolerance) > float(args_cli.auto_pick_tolerance):
+    parser.error("--auto_pick_recenter_tolerance must be <= --auto_pick_tolerance.")
 if args_cli.auto_pick_hold_steps < 1 or args_cli.auto_pick_state_timeout < 1:
     parser.error("automatic pick hold/timeout step counts must be >= 1.")
 for range_name in ("start_ee_x_range", "start_ee_y_range", "start_ee_z_range"):
@@ -1027,7 +1048,7 @@ def sample_start_ee_target(rng: np.random.Generator) -> Vec3 | None:
     bounds = (args_cli.start_ee_x_range, args_cli.start_ee_y_range, args_cli.start_ee_z_range)
     for _ in range(256):
         target = tuple(float(rng.uniform(*axis_bounds)) for axis_bounds in bounds)
-        if within_workspace_reach((target[0], target[1])):
+        if math.hypot(target[0], target[1]) <= float(args_cli.start_ee_radius_max):
             return tuple(round(value, 6) for value in target)  # type: ignore[return-value]
     raise RuntimeError("failed to sample a reachable randomized start EEF target")
 
@@ -1205,7 +1226,10 @@ def sample_spread_non_overlapping_xy(
         raise RuntimeError(f"failed to sample spread placement for {label}; enlarge the robot-front workspace")
 
     candidates.sort(key=lambda candidate: candidate[0], reverse=True)
-    top_count = max(1, min(len(candidates), max(8, len(candidates) // 10)))
+    # Keep objects well spread without always selecting only the farthest edge
+    # candidates, which made the observed cube distribution much narrower than
+    # the configured workspace.
+    top_count = max(1, min(len(candidates), max(16, math.ceil(len(candidates) * 0.35))))
     _, x, y = candidates[int(rng.integers(0, top_count))]
 
     occupied.append((x, y, half_extents[0], half_extents[1], label))
@@ -1230,8 +1254,9 @@ def split_workspace_for_tray_and_cubes(
     """
     y_min, y_max = y_bounds
     y_mid = 0.5 * (y_min + y_max)
-    # Keep the tray on the stable front-left placement side.
-    tray_positive_side = True
+    # Alternate the tray side deterministically per episode so loose cubes and
+    # pick/place motions cover both lateral halves of the table.
+    tray_positive_side = bool(rng.integers(0, 2))
     if tray_positive_side:
         tray_y_bounds = (y_mid + margin, y_max)
         cube_y_bounds = (y_min, y_mid - margin)
@@ -2561,6 +2586,7 @@ class AutoPickPlaceController:
             "recovery_waypoint",
             "approach",
             "align_yaw",
+            "recenter_after_yaw",
             "descend",
             "move_above_slot",
             "place_descend",
@@ -2688,7 +2714,15 @@ class AutoPickPlaceController:
             self.steps_without_motion_progress += 1
 
     def _position_action(
-        self, action, ee_pos, target, max_step: float, *, track_progress: bool = True
+        self,
+        action,
+        ee_pos,
+        target,
+        max_step: float,
+        *,
+        track_progress: bool = True,
+        tolerance: float | None = None,
+        xy_tolerance: float | None = None,
     ) -> bool:
         delta = target - ee_pos
         distance = float(torch.linalg.norm(delta).item())
@@ -2697,7 +2731,15 @@ class AutoPickPlaceController:
                 distance, float(args_cli.solver_recovery_progress_epsilon)
             )
         action[:, 0:6] = 0.0
-        if distance <= float(args_cli.auto_pick_tolerance):
+        position_tolerance = (
+            float(args_cli.auto_pick_tolerance)
+            if tolerance is None
+            else float(tolerance)
+        )
+        xy_distance = float(torch.linalg.norm(delta[:2]).item())
+        if distance <= position_tolerance and (
+            xy_tolerance is None or xy_distance <= float(xy_tolerance)
+        ):
             return True
         step = delta if distance <= max_step else delta / distance * max_step
         action[:, 0:3] = step.unsqueeze(0)
@@ -2744,15 +2786,17 @@ class AutoPickPlaceController:
             self.grasp_offset = None
             self.fixed_target = None
 
-        center = torch.tensor(
-            args_cli.solver_recovery_center,
-            device=env.device,
-            dtype=torch.float32,
-        )
+        center = None
+        if not self.solver_recovery_holding:
+            center = torch.tensor(
+                args_cli.solver_recovery_center,
+                device=env.device,
+                dtype=torch.float32,
+            )
         raise_target = ee_pos.clone()
         raise_target[2] = max(
             float(ee_pos[2].item()) + float(args_cli.solver_recovery_raise_clearance),
-            float(center[2].item()),
+            float(args_cli.solver_recovery_center[2]),
         )
         self.solver_recovery_raise_target = raise_target
         self.solver_recovery_center_target = center
@@ -2768,7 +2812,14 @@ class AutoPickPlaceController:
             stalled_state=stalled_state,
             attempt=self.solver_recovery_attempts,
             raise_target=tensor_to_numpy(raise_target).tolist(),
-            center_target=tensor_to_numpy(center).tolist(),
+            center_target=(
+                tensor_to_numpy(center).tolist() if center is not None else None
+            ),
+            recovery_mode=(
+                "raise_only"
+                if self.solver_recovery_holding
+                else "raise_and_recenter"
+            ),
             return_state=self.solver_recovery_return_state,
         )
         self._transition("solver_recovery_raise", stalled_state=stalled_state)
@@ -2817,7 +2868,18 @@ class AutoPickPlaceController:
                 else args_cli.gripper_open_command
             )
             if reached:
-                self._transition("solver_recovery_recenter")
+                if self.solver_recovery_holding:
+                    return_state = self.solver_recovery_return_state or "move_above_slot"
+                    self._event(
+                        "solver_recovery_completed",
+                        return_state=return_state,
+                        attempt=self.solver_recovery_attempts,
+                        recovery_mode="raise_only",
+                    )
+                    self.solver_recovery_holding = False
+                    self._transition(return_state)
+                else:
+                    self._transition("solver_recovery_recenter")
         elif self.state == "solver_recovery_recenter":
             assert self.solver_recovery_center_target is not None
             reached = self._position_action(
@@ -2834,6 +2896,7 @@ class AutoPickPlaceController:
                 self._event(
                     "solver_recovery_completed", return_state=return_state,
                     attempt=self.solver_recovery_attempts,
+                    recovery_mode="raise_and_recenter",
                 )
                 self.solver_recovery_holding = False
                 self._transition(return_state)
@@ -2888,7 +2951,15 @@ class AutoPickPlaceController:
             yaw_cmd *= self.yaw_response_sign
             action[:, 5] = yaw_cmd
             if abs(error) <= float(args_cli.auto_pick_yaw_tolerance):
-                self._transition("descend")
+                xy_error = float(
+                    torch.linalg.norm(approach_target[:2] - ee_pos[:2]).item()
+                )
+                self._event(
+                    "yaw_aligned",
+                    yaw_error=error,
+                    post_yaw_xy_error=xy_error,
+                )
+                self._transition("recenter_after_yaw")
         elif self.state == "approach":
             target = cube_pos.clone()
             target[2] += float(args_cli.auto_pick_approach_height)
@@ -2896,12 +2967,53 @@ class AutoPickPlaceController:
                 # Align directly above the cube; this remains reachable after
                 # retreating from a previous tray placement.
                 self._transition("align_yaw")
+        elif self.state == "recenter_after_yaw":
+            # Yaw motion can translate the offset EE frame by several
+            # millimeters. Hold the completed orientation and explicitly
+            # re-center above the live cube pose before descending.
+            target = cube_pos.clone()
+            target[2] += float(args_cli.auto_pick_approach_height)
+            if self._position_action(
+                action,
+                ee_pos,
+                target,
+                float(args_cli.auto_pick_step),
+                tolerance=float(args_cli.auto_pick_recenter_tolerance),
+            ):
+                residual = target - ee_pos
+                self._event(
+                    "post_yaw_recentered",
+                    xy_error=float(torch.linalg.norm(residual[:2]).item()),
+                    z_error=abs(float(residual[2].item())),
+                    tolerance=float(args_cli.auto_pick_recenter_tolerance),
+                )
+                self._transition("descend")
         elif self.state == "descend":
-            if self._position_action(action, ee_pos, cube_pos, float(args_cli.auto_pick_descend_step)):
+            if self._position_action(
+                action,
+                ee_pos,
+                cube_pos,
+                float(args_cli.auto_pick_descend_step),
+                xy_tolerance=float(args_cli.auto_pick_recenter_tolerance),
+            ):
                 self.grasp_start_z = float(cube_pos[2].item())
+                residual = cube_pos - ee_pos
+                self._event(
+                    "pre_grasp_centered",
+                    xy_error=float(torch.linalg.norm(residual[:2]).item()),
+                    z_error=abs(float(residual[2].item())),
+                    xy_tolerance=float(args_cli.auto_pick_recenter_tolerance),
+                )
                 self._transition("close")
         elif self.state == "close":
-            self._position_action(action, ee_pos, cube_pos, float(args_cli.auto_pick_descend_step))
+            self._position_action(
+                action,
+                ee_pos,
+                cube_pos,
+                float(args_cli.auto_pick_descend_step),
+                track_progress=False,
+                xy_tolerance=float(args_cli.auto_pick_recenter_tolerance),
+            )
             action[:, 6] = args_cli.gripper_close_command
             if self.state_steps >= hold:
                 self.fixed_target = ee_pos.clone()
