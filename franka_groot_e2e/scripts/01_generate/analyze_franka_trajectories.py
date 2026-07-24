@@ -52,6 +52,11 @@ class EpisodeTrajectory:
     slot_index: int
     positions: np.ndarray
     sim_times: np.ndarray
+    blue_cube_positions: np.ndarray
+    blue_cube_strata: list[int | None]
+    tray_position: np.ndarray
+    workspace_bounds: tuple[float, float, float, float]
+    target_workspace_bins: tuple[int, int]
 
 
 def parse_args() -> argparse.Namespace:
@@ -179,6 +184,33 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
     if not isinstance(blue_cubes, list) or not isinstance(red_cubes, list):
         raise ValueError(f"Invalid cube lists: {logs_dir / 'scenario.json'}")
     positions, sim_times = load_states(logs_dir / "states.jsonl")
+    try:
+        blue_cube_positions = np.asarray(
+            [[float(value) for value in cube["pos"]] for cube in blue_cubes],
+            dtype=np.float64,
+        )
+        if blue_cube_positions.shape != (len(blue_cubes), 3):
+            raise ValueError(f"unexpected blue-cube position shape {blue_cube_positions.shape}")
+        tray_position = np.asarray(
+            [float(value) for value in scenario["tray_pos"]], dtype=np.float64
+        )
+        if tray_position.shape != (3,):
+            raise ValueError(f"unexpected tray position shape {tray_position.shape}")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid spawn positions in {logs_dir / 'scenario.json'}: {exc}") from exc
+    scenario_args = scenario_wrapper.get("args", {})
+    if not isinstance(scenario_args, dict):
+        scenario_args = {}
+    workspace_bounds = (
+        float(scenario_args.get("workspace_x_min", 0.33)),
+        float(scenario_args.get("workspace_x_max", 0.70)),
+        float(scenario_args.get("workspace_y_min", -0.34)),
+        float(scenario_args.get("workspace_y_max", 0.34)),
+    )
+    bins_value = scenario_args.get("target_workspace_bins", (4, 6))
+    if not isinstance(bins_value, (list, tuple)) or len(bins_value) != 2:
+        bins_value = (4, 6)
+    target_workspace_bins = (int(bins_value[0]), int(bins_value[1]))
     completed = bool(result.get("completed"))
     failed = bool(result.get("failed"))
     failure_reason, failed_state, total_solver_attempts = load_automation_details(
@@ -204,6 +236,16 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
         slot_index=int(result.get("slot_index", 0)),
         positions=positions,
         sim_times=sim_times,
+        blue_cube_positions=blue_cube_positions,
+        blue_cube_strata=[
+            int(cube["position_stratum"])
+            if cube.get("position_stratum") is not None
+            else None
+            for cube in blue_cubes
+        ],
+        tray_position=tray_position,
+        workspace_bounds=workspace_bounds,
+        target_workspace_bins=target_workspace_bins,
     )
 
 
@@ -531,6 +573,135 @@ def plot_by_scenario(
     plt.close(figure)
 
 
+def workspace_coverage_rows(
+    episodes: list[EpisodeTrajectory],
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return per-target spawn rows and grid-occupancy statistics by scenario."""
+    rows: list[dict[str, Any]] = []
+    for episode in episodes:
+        for target_index, (position, stratum) in enumerate(
+            zip(episode.blue_cube_positions, episode.blue_cube_strata, strict=True)
+        ):
+            rows.append(
+                {
+                    "episode_id": episode.episode_id,
+                    "blue_cube_count": episode.blue_cube_count,
+                    "target_index": target_index,
+                    "successful": episode.successful,
+                    "x_m": float(position[0]),
+                    "y_m": float(position[1]),
+                    "z_m": float(position[2]),
+                    "position_stratum": "" if stratum is None else stratum,
+                    "tray_x_m": float(episode.tray_position[0]),
+                    "tray_y_m": float(episode.tray_position[1]),
+                }
+            )
+
+    summary: dict[str, Any] = {}
+    for blue_count in sorted({episode.blue_cube_count for episode in episodes}):
+        group = [episode for episode in episodes if episode.blue_cube_count == blue_count]
+        points = np.concatenate([episode.blue_cube_positions[:, :2] for episode in group], axis=0)
+        first_points = np.asarray([episode.blue_cube_positions[0, :2] for episode in group])
+        x_min = min(episode.workspace_bounds[0] for episode in group)
+        x_max = max(episode.workspace_bounds[1] for episode in group)
+        y_min = min(episode.workspace_bounds[2] for episode in group)
+        y_max = max(episode.workspace_bounds[3] for episode in group)
+        x_bins = max(episode.target_workspace_bins[0] for episode in group)
+        y_bins = max(episode.target_workspace_bins[1] for episode in group)
+        x_edges = np.linspace(x_min, x_max, x_bins + 1)
+        y_edges = np.linspace(y_min, y_max, y_bins + 1)
+
+        def grid_stats(values: np.ndarray) -> dict[str, Any]:
+            counts, _, _ = np.histogram2d(values[:, 0], values[:, 1], bins=(x_edges, y_edges))
+            flat = counts.astype(np.int64).reshape(-1)
+            mean = float(flat.mean())
+            return {
+                "samples": int(len(values)),
+                "occupied_cells": int(np.count_nonzero(flat)),
+                "total_cells": int(len(flat)),
+                "cell_count_cv": float(flat.std() / mean) if mean else 0.0,
+                "cell_counts": counts.astype(np.int64).tolist(),
+                "x_min_m": float(values[:, 0].min()),
+                "x_max_m": float(values[:, 0].max()),
+                "y_min_m": float(values[:, 1].min()),
+                "y_max_m": float(values[:, 1].max()),
+            }
+
+        summary[str(blue_count)] = {
+            "workspace_bounds": [x_min, x_max, y_min, y_max],
+            "workspace_bins": [x_bins, y_bins],
+            "all_targets": grid_stats(points),
+            "first_target": grid_stats(first_points),
+        }
+    return rows, summary
+
+
+def plot_workspace_coverage(
+    episodes: list[EpisodeTrajectory],
+    output_path: Path,
+    dpi: int,
+) -> None:
+    """Plot blue-cube spawn scatter and occupancy heatmap for every cube count."""
+    cube_counts = sorted({episode.blue_cube_count for episode in episodes})
+    figure, axes = plt.subplots(
+        len(cube_counts),
+        2,
+        figsize=(12, max(4.0, 4.2 * len(cube_counts))),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    for row_index, blue_count in enumerate(cube_counts):
+        group = [episode for episode in episodes if episode.blue_cube_count == blue_count]
+        points = np.concatenate([episode.blue_cube_positions[:, :2] for episode in group], axis=0)
+        first_points = np.asarray([episode.blue_cube_positions[0, :2] for episode in group])
+        trays = np.asarray([episode.tray_position[:2] for episode in group])
+        x_min = min(episode.workspace_bounds[0] for episode in group)
+        x_max = max(episode.workspace_bounds[1] for episode in group)
+        y_min = min(episode.workspace_bounds[2] for episode in group)
+        y_max = max(episode.workspace_bounds[3] for episode in group)
+        x_bins = max(episode.target_workspace_bins[0] for episode in group)
+        y_bins = max(episode.target_workspace_bins[1] for episode in group)
+        x_edges = np.linspace(x_min, x_max, x_bins + 1)
+        y_edges = np.linspace(y_min, y_max, y_bins + 1)
+        counts, _, _ = np.histogram2d(points[:, 0], points[:, 1], bins=(x_edges, y_edges))
+
+        scatter_axis = axes[row_index, 0]
+        scatter_axis.scatter(points[:, 0], points[:, 1], s=10, alpha=0.35, color="#2369bd", label="all blue targets")
+        scatter_axis.scatter(first_points[:, 0], first_points[:, 1], s=13, alpha=0.55, color="#0b2f59", label="first target")
+        scatter_axis.scatter(trays[:, 0], trays[:, 1], s=26, marker="x", color="#2a9d52", label="tray center")
+        scatter_axis.set_xlim(x_min, x_max)
+        scatter_axis.set_ylim(y_min, y_max)
+        configure_axis(scatter_axis, "Spawn X (m)", "Spawn Y (m)")
+        scatter_axis.set_title(f"{blue_count} blue cube(s): initial target positions")
+        scatter_axis.legend(fontsize=7, loc="best")
+
+        heat_axis = axes[row_index, 1]
+        image = heat_axis.imshow(
+            counts.T,
+            origin="lower",
+            extent=(x_min, x_max, y_min, y_max),
+            aspect="auto",
+            cmap="Blues",
+        )
+        for x_index in range(x_bins):
+            for y_index in range(y_bins):
+                heat_axis.text(
+                    0.5 * (x_edges[x_index] + x_edges[x_index + 1]),
+                    0.5 * (y_edges[y_index] + y_edges[y_index + 1]),
+                    str(int(counts[x_index, y_index])),
+                    ha="center",
+                    va="center",
+                    fontsize=8,
+                )
+        heat_axis.set_xlabel("Spawn X (m)")
+        heat_axis.set_ylabel("Spawn Y (m)")
+        heat_axis.set_title(f"{x_bins}×{y_bins} workspace occupancy")
+        figure.colorbar(image, ax=heat_axis, shrink=0.8, label="Blue targets")
+    figure.suptitle("Blue-cube workspace coverage by scenario", fontsize=15)
+    figure.savefig(output_path, dpi=dpi)
+    plt.close(figure)
+
+
 def plot_scenario_statistics(
     scenario_rows: list[dict[str, Any]],
     output_path: Path,
@@ -724,10 +895,12 @@ def main() -> None:
     episode_rows = [trajectory_metrics(episode) for episode in episodes]
     scenario_rows = aggregate_metrics(episodes, episode_rows)
     failure_analysis, failure_rows, solver_rows = aggregate_failure_analysis(episodes)
+    workspace_rows, workspace_coverage = workspace_coverage_rows(episodes)
     write_csv(output_dir / "episode_metrics.csv", episode_rows)
     write_csv(output_dir / "scenario_success.csv", scenario_rows)
     write_csv(output_dir / "failure_causes.csv", failure_rows)
     write_csv(output_dir / "solver_recovery_outcomes.csv", solver_rows)
+    write_csv(output_dir / "workspace_coverage.csv", workspace_rows)
 
     total_success = sum(episode.successful for episode in episodes)
     summary = {
@@ -740,6 +913,7 @@ def main() -> None:
         "blue_cube_counts": sorted({episode.blue_cube_count for episode in episodes}),
         "scenario_statistics": scenario_rows,
         "failure_analysis": failure_analysis,
+        "workspace_coverage": workspace_coverage,
         "skipped_episodes": skipped,
         "outputs": {
             "trajectory_distribution": "trajectory_distribution.png",
@@ -751,6 +925,8 @@ def main() -> None:
             "scenario_success": "scenario_success.csv",
             "failure_causes": "failure_causes.csv",
             "solver_recovery_outcomes": "solver_recovery_outcomes.csv",
+            "workspace_coverage_figure": "workspace_coverage.png",
+            "workspace_coverage_csv": "workspace_coverage.csv",
         },
     }
     with (output_dir / "scenario_summary.json").open("w", encoding="utf-8") as stream:
@@ -775,6 +951,11 @@ def main() -> None:
     plot_scenario_statistics(
         scenario_rows,
         output_dir / "scenario_statistics.png",
+        args.dpi,
+    )
+    plot_workspace_coverage(
+        episodes,
+        output_dir / "workspace_coverage.png",
         args.dpi,
     )
     plot_failure_analysis(

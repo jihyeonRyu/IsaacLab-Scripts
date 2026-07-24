@@ -160,6 +160,26 @@ def add_args() -> argparse.ArgumentParser:
         "--workspace_radius_max", type=float, default=0.68,
         help="Maximum XY distance from the robot base for loose objects and tray centers.",
     )
+    parser.add_argument(
+        "--target_workspace_bins",
+        type=int,
+        nargs=2,
+        default=(4, 6),
+        metavar=("X_BINS", "Y_BINS"),
+        help="Stratified X/Y grid used to spread blue target spawns over the reachable workspace.",
+    )
+    parser.add_argument(
+        "--stratified_target_positions",
+        action="store_true",
+        default=True,
+        help="Cycle blue target spawns through workspace cells instead of biasing the first target away from the tray.",
+    )
+    parser.add_argument(
+        "--no_stratified_target_positions",
+        action="store_false",
+        dest="stratified_target_positions",
+        help="Use legacy distance-spread sampling for blue targets.",
+    )
     parser.add_argument("--cube_z", type=float, default=0.026)
     parser.add_argument("--tray_z", type=float, default=0.013)
     parser.add_argument(
@@ -647,6 +667,10 @@ if args_cli.workspace_x_max <= args_cli.workspace_x_min or args_cli.workspace_y_
     parser.error("workspace max bounds must be greater than min bounds.")
 if args_cli.workspace_radius_max <= 0:
     parser.error("--workspace_radius_max must be > 0.")
+if any(int(value) < 1 for value in args_cli.target_workspace_bins):
+    parser.error("--target_workspace_bins values must both be >= 1.")
+if math.prod(int(value) for value in args_cli.target_workspace_bins) < args_cli.max_blue_cubes:
+    parser.error("--target_workspace_bins must contain at least max_blue_cubes cells.")
 if (
     args_cli.start_ee_radius_min <= 0
     or args_cli.start_ee_radius_max < args_cli.start_ee_radius_min
@@ -1014,6 +1038,7 @@ class ScenarioObjectSpec:
     dynamic_friction: float = 0.7
     restitution: float = 0.0
     recovery_waypoint: Vec3 | None = None
+    position_stratum: int | None = None
 
 
 @dataclass
@@ -1275,6 +1300,113 @@ def sample_non_overlapping_xy(
     raise RuntimeError(f"failed to sample non-overlapping placement for {label}; reduce object count or enlarge workspace")
 
 
+def sample_stratified_target_xy(
+    rng: np.random.Generator,
+    *,
+    x_bounds: tuple[float, float],
+    y_bounds: tuple[float, float],
+    half_extents: tuple[float, float],
+    occupied: list[tuple[float, float, float, float, str]],
+    margin: float,
+    label: str,
+    cell_order: list[int],
+    samples_per_cell: int = 64,
+) -> tuple[tuple[float, float], int]:
+    """Sample a tray-clear blue target from a deterministic workspace-cell order."""
+    x_bins, y_bins = (int(value) for value in args_cli.target_workspace_bins)
+    usable_x_min = x_bounds[0] + half_extents[0]
+    usable_x_max = x_bounds[1] - half_extents[0]
+    usable_y_min = y_bounds[0] + half_extents[1]
+    usable_y_max = y_bounds[1] - half_extents[1]
+    if usable_x_max <= usable_x_min or usable_y_max <= usable_y_min:
+        raise RuntimeError(f"workspace is too small for {label}")
+
+    for cell_id in cell_order:
+        x_index, y_index = divmod(int(cell_id), y_bins)
+        cell_x_min = usable_x_min + (usable_x_max - usable_x_min) * x_index / x_bins
+        cell_x_max = usable_x_min + (usable_x_max - usable_x_min) * (x_index + 1) / x_bins
+        cell_y_min = usable_y_min + (usable_y_max - usable_y_min) * y_index / y_bins
+        cell_y_max = usable_y_min + (usable_y_max - usable_y_min) * (y_index + 1) / y_bins
+        for _ in range(samples_per_cell):
+            xy = (
+                float(rng.uniform(cell_x_min, cell_x_max)),
+                float(rng.uniform(cell_y_min, cell_y_max)),
+            )
+            if not within_workspace_reach(xy):
+                continue
+            # The tray is already in occupied, so a target can never spawn in
+            # or touching it; the configured spawn margin is enforced as well.
+            if overlaps_2d(xy, half_extents, occupied, margin):
+                continue
+            occupied.append((xy[0], xy[1], half_extents[0], half_extents[1], label))
+            return xy, int(cell_id)
+
+    raise RuntimeError(
+        f"failed to sample stratified tray-clear placement for {label}; "
+        "reduce object count or enlarge workspace"
+    )
+
+
+def target_workspace_cell_order(
+    blue_cube_count: int,
+    scenario_ordinal: int,
+    target_index: int,
+) -> list[int]:
+    """Return a Y-balanced, seed-stable order of preferred workspace cells."""
+    x_bins, y_bins = (int(value) for value in args_cli.target_workspace_bins)
+    permutation_rng = np.random.default_rng(
+        int(args_cli.seed) * 1_000_003 + int(blue_cube_count) * 97_409 + x_bins * y_bins
+    )
+    x_permutation = [int(value) for value in permutation_rng.permutation(x_bins)]
+    y_permutation = [int(value) for value in permutation_rng.permutation(y_bins)]
+
+    # Cycle every scenario of the same cube count through the Y bands. Search
+    # all X cells in that band before changing Y, so tray/reach rejection can
+    # never create a systematic hole in one lateral band.
+    y_stride = max(1, y_bins // max(1, blue_cube_count))
+    x_stride = max(1, x_bins // max(1, blue_cube_count))
+    logical_y_start = (
+        int(scenario_ordinal) + int(target_index) * y_stride
+    ) % y_bins
+    logical_x_start = (
+        int(scenario_ordinal) // y_bins + int(target_index) * x_stride
+    ) % x_bins
+    cell_order: list[int] = []
+    for y_offset in range(y_bins):
+        y_index = y_permutation[(logical_y_start + y_offset) % y_bins]
+        for x_offset in range(x_bins):
+            x_index = x_permutation[(logical_x_start + x_offset) % x_bins]
+            cell_order.append(x_index * y_bins + y_index)
+    return cell_order
+
+
+_BLUE_SCENARIO_ORDINALS: dict[
+    tuple[int, int, int], list[tuple[int, int]]
+] = {}
+_BLUE_SCENARIO_TOTALS: dict[tuple[int, int, int], dict[int, int]] = {}
+
+
+def blue_scenario_count_and_ordinal(episode_index: int) -> tuple[int, int]:
+    """Return blue count and its zero-based ordinal across global episode indices."""
+    key = (
+        int(args_cli.seed),
+        int(args_cli.min_blue_cubes),
+        int(args_cli.max_blue_cubes),
+    )
+    records = _BLUE_SCENARIO_ORDINALS.setdefault(key, [])
+    totals = _BLUE_SCENARIO_TOTALS.setdefault(key, {})
+    while len(records) <= int(episode_index):
+        index = len(records)
+        count_rng = np.random.default_rng(int(args_cli.seed) + index)
+        count = int(
+            count_rng.integers(args_cli.min_blue_cubes, args_cli.max_blue_cubes + 1)
+        )
+        ordinal = totals.get(count, 0)
+        records.append((count, ordinal))
+        totals[count] = ordinal + 1
+    return records[int(episode_index)]
+
+
 def sample_spread_non_overlapping_xy(
     rng: np.random.Generator,
     *,
@@ -1363,9 +1495,14 @@ def _generate_blue_tray_scenario_once(
     rng = np.random.default_rng(seed)
 
     count_rng = np.random.default_rng(base_seed)
-    blue_count = int(
+    sampled_blue_count = int(
         count_rng.integers(args_cli.min_blue_cubes, args_cli.max_blue_cubes + 1)
     )
+    blue_count, blue_scenario_ordinal = blue_scenario_count_and_ordinal(episode_index)
+    if blue_count != sampled_blue_count:
+        raise RuntimeError(
+            f"blue scenario ordinal mismatch: sampled={sampled_blue_count} cached={blue_count}"
+        )
     red_count = int(
         count_rng.integers(args_cli.min_red_cubes, args_cli.max_red_cubes + 1)
     )
@@ -1447,16 +1584,32 @@ def _generate_blue_tray_scenario_once(
         size = sample_cuboid_size(rng)
         rotated_half_extent = 0.5 * math.hypot(size[0], size[1])
         mass, static_friction, dynamic_friction, restitution = sample_cube_physics(rng)
-        xy = sample_spread_non_overlapping_xy(
-            rng,
-            x_bounds=x_bounds,
-            y_bounds=cube_y_bounds,
-            half_extents=(rotated_half_extent, rotated_half_extent),
-            occupied=occupied,
-            spread_refs=cube_spread_refs,
-            margin=float(args_cli.min_spawn_spacing),
-            label=f"blue_cube_{idx}",
-        )
+        position_stratum: int | None = None
+        if args_cli.stratified_target_positions:
+            xy, position_stratum = sample_stratified_target_xy(
+                rng,
+                x_bounds=x_bounds,
+                y_bounds=cube_y_bounds,
+                half_extents=(rotated_half_extent, rotated_half_extent),
+                occupied=occupied,
+                margin=float(args_cli.min_spawn_spacing),
+                label=f"blue_cube_{idx}",
+                cell_order=target_workspace_cell_order(
+                    blue_count, blue_scenario_ordinal, idx
+                ),
+            )
+            cube_spread_refs.append(xy)
+        else:
+            xy = sample_spread_non_overlapping_xy(
+                rng,
+                x_bounds=x_bounds,
+                y_bounds=cube_y_bounds,
+                half_extents=(rotated_half_extent, rotated_half_extent),
+                occupied=occupied,
+                spread_refs=cube_spread_refs,
+                margin=float(args_cli.min_spawn_spacing),
+                label=f"blue_cube_{idx}",
+            )
         builtin = idx == 0
         blue_cubes.append(
             ScenarioObjectSpec(
@@ -1473,6 +1626,7 @@ def _generate_blue_tray_scenario_once(
                 static_friction=static_friction,
                 dynamic_friction=dynamic_friction,
                 restitution=restitution,
+                position_stratum=position_stratum,
             )
         )
 
@@ -3147,13 +3301,14 @@ class AutoPickPlaceController:
             yaw_cmd *= self.yaw_response_sign
             action[:, 5] = yaw_cmd
             if abs(error) <= float(args_cli.auto_pick_yaw_tolerance):
-                xy_error = float(
-                    torch.linalg.norm(approach_target[:2] - ee_pos[:2]).item()
-                )
+                xy_residual = approach_target[:2] - ee_pos[:2]
+                xy_error = float(torch.linalg.norm(xy_residual).item())
                 self._event(
                     "yaw_aligned",
                     yaw_error=error,
                     post_yaw_xy_error=xy_error,
+                    post_yaw_x_error=abs(float(xy_residual[0].item())),
+                    post_yaw_y_error=abs(float(xy_residual[1].item())),
                 )
                 self._transition("recenter_after_yaw")
         elif self.state == "approach":
@@ -3166,7 +3321,7 @@ class AutoPickPlaceController:
         elif self.state == "recenter_after_yaw":
             # Yaw motion can translate the offset EE frame by several
             # millimeters. Hold the completed orientation and explicitly
-            # re-center above the live cube pose before descending.
+            # re-center both X and Y above the live cube pose before descending.
             target = cube_pos.clone()
             target[2] += float(args_cli.auto_pick_approach_height)
             if self._position_action(
@@ -3175,11 +3330,14 @@ class AutoPickPlaceController:
                 target,
                 float(args_cli.auto_pick_step),
                 tolerance=float(args_cli.auto_pick_recenter_tolerance),
+                xy_tolerance=float(args_cli.auto_pick_recenter_tolerance),
             ):
                 residual = target - ee_pos
                 self._event(
                     "post_yaw_recentered",
                     xy_error=float(torch.linalg.norm(residual[:2]).item()),
+                    x_error=abs(float(residual[0].item())),
+                    y_error=abs(float(residual[1].item())),
                     z_error=abs(float(residual[2].item())),
                     tolerance=float(args_cli.auto_pick_recenter_tolerance),
                 )
@@ -3197,6 +3355,8 @@ class AutoPickPlaceController:
                 self._event(
                     "pre_grasp_centered",
                     xy_error=float(torch.linalg.norm(residual[:2]).item()),
+                    x_error=abs(float(residual[0].item())),
+                    y_error=abs(float(residual[1].item())),
                     z_error=abs(float(residual[2].item())),
                     xy_tolerance=float(args_cli.auto_pick_recenter_tolerance),
                 )
@@ -3963,13 +4123,72 @@ def run_layout_validation_only() -> None:
     ]
     fixed_trays = [scenario.tray_pos for scenario in initial]
     blue_counts: dict[int, int] = {}
+    blue_positions: dict[int, list[tuple[float, float]]] = {}
+    first_blue_positions: dict[int, list[tuple[float, float]]] = {}
+    blue_strata: dict[int, list[int]] = {}
+    first_blue_strata: dict[int, list[int]] = {}
     for offset in range(count):
         scenario = generate_blue_tray_scenario(
             first_episode + offset, fixed_trays[offset % env_count]
         )
-        validate_scenario_spawn_clearance(scenario)
+        validate_scenario_spawn_clearance(scenario, margin=float(args_cli.min_spawn_spacing))
         blue_count = len(scenario.blue_cubes)
         blue_counts[blue_count] = blue_counts.get(blue_count, 0) + 1
+        blue_positions.setdefault(blue_count, []).extend(
+            (float(cube.pos[0]), float(cube.pos[1])) for cube in scenario.blue_cubes
+        )
+        first_blue_positions.setdefault(blue_count, []).append(
+            (float(scenario.blue_cubes[0].pos[0]), float(scenario.blue_cubes[0].pos[1]))
+        )
+        blue_strata.setdefault(blue_count, []).extend(
+            int(cube.position_stratum) for cube in scenario.blue_cubes
+            if cube.position_stratum is not None
+        )
+        if scenario.blue_cubes[0].position_stratum is not None:
+            first_blue_strata.setdefault(blue_count, []).append(
+                int(scenario.blue_cubes[0].position_stratum)
+            )
+
+    x_bins, y_bins = (int(value) for value in args_cli.target_workspace_bins)
+    x_edges = np.linspace(float(args_cli.workspace_x_min), float(args_cli.workspace_x_max), x_bins + 1)
+    y_edges = np.linspace(float(args_cli.workspace_y_min), float(args_cli.workspace_y_max), y_bins + 1)
+
+    def coverage_row(
+        positions: list[tuple[float, float]], strata: list[int]
+    ) -> dict[str, Any]:
+        points = np.asarray(positions, dtype=np.float64)
+        counts_2d, _, _ = np.histogram2d(points[:, 0], points[:, 1], bins=(x_edges, y_edges))
+        flat_counts = counts_2d.astype(np.int64).reshape(-1)
+        mean_count = float(flat_counts.mean())
+        stratum_counts = np.bincount(strata, minlength=x_bins * y_bins).astype(np.int64)
+        stratum_mean = float(stratum_counts.mean())
+        return {
+            "samples": int(len(points)),
+            "occupied_cells": int(np.count_nonzero(flat_counts)),
+            "total_cells": int(len(flat_counts)),
+            "cell_count_cv": float(flat_counts.std() / mean_count) if mean_count else 0.0,
+            "x_min": float(points[:, 0].min()),
+            "x_max": float(points[:, 0].max()),
+            "y_min": float(points[:, 1].min()),
+            "y_max": float(points[:, 1].max()),
+            "cell_counts": counts_2d.astype(np.int64).tolist(),
+            "position_stratum_counts": stratum_counts.tolist(),
+            "position_stratum_cv": (
+                float(stratum_counts.std() / stratum_mean) if stratum_mean else 0.0
+            ),
+        }
+
+    coverage = {
+        blue_count: {
+            "all_targets": coverage_row(
+                blue_positions[blue_count], blue_strata.get(blue_count, [])
+            ),
+            "first_target": coverage_row(
+                first_blue_positions[blue_count], first_blue_strata.get(blue_count, [])
+            ),
+        }
+        for blue_count in sorted(blue_positions)
+    }
     print(
         "[LAYOUT-VALIDATION] "
         + json.dumps(
@@ -3978,6 +4197,8 @@ def run_layout_validation_only() -> None:
                 "vector_env_slots": env_count,
                 "fixed_tray_positions": fixed_trays,
                 "blue_cube_counts": blue_counts,
+                "target_workspace_bins": [x_bins, y_bins],
+                "blue_target_coverage": coverage,
                 "tray_overlap_count": 0,
             },
             sort_keys=True,

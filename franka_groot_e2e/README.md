@@ -381,7 +381,11 @@ Current generation defaults:
 - loose cube/tray workspace: X `0.33–0.70 m`, Y `-0.34–0.34 m`, maximum radius `0.68 m`;
 - randomized start EEF: X `0.36–0.70 m`, Y `-0.34–0.34 m`, Z `0.25–0.55 m`, safe radius `0.40–0.72 m`;
 - start-pose augmentation translates only and preserves the validated floor-facing tool orientation;
-- tray side alternates by episode and cube sampling covers both lateral table halves;
+- tray side alternates by episode and target sampling covers both lateral table halves;
+- blue target positions use a 4×6 X/Y workspace grid with Y-band-first cycling;
+  all X cells in the requested Y band are tested before falling back to another
+  band, and every candidate must remain outside the tray footprint plus the
+  configured 4 cm clearance;
 - the completed v4 dataset disables deliberate pre-grasp off-target waypoints
   with `recovery_waypoint_prob=0.0`;
 - yaw alignment is followed by a 6 mm post-yaw recenter, and XY centering remains enforced while descending and closing;
@@ -423,7 +427,9 @@ waypoint.
 
 `run_v5_waypoint10_recovery1.sh` restores the short pre-grasp off-target
 waypoint for 10% of targets and limits failure-triggered solver recovery to one
-attempt per cube. It uses generation seed 70007 and separate raw, LeRobot,
+attempt per cube. It also enables the 4×6 Y-balanced target workspace sampler
+that removes the 1-cube center-Y gap caused by the legacy "far from tray"
+first-target score. It uses generation seed 70007 and separate raw, LeRobot,
 checkpoint, pipeline-state, and Arena output paths.
 
 ```bash
@@ -436,7 +442,8 @@ nohup bash franka_groot_e2e/run_v5_waypoint10_recovery1.sh \
 
 The detached command automatically runs 600-episode generation, trajectory
 analysis, successful-episode LeRobot conversion, 8-GPU GR00T SFT, and the
-aligned 8-GPU Arena evaluation with 100 episodes for each cube count.
+aligned 8-GPU Arena evaluation with 100 episodes for each cube count. GR00T
+continues to predict 40 actions; Arena executes 16 at the dataset-matched 15 Hz.
 
 Vectorized generation samples loose objects against each environment slot's
 actual fixed tray pose; it never shifts only the tray metadata after sampling.
@@ -459,6 +466,15 @@ the blue-cube counts stayed balanced at 680 one-cube, 644 two-cube, and 676
 three-cube scenarios. A separate four-environment Isaac physics smoke test also
 recorded zero initial footprint overlaps.
 It completed 4/4 episodes and 8/8 pick-place operations without recovery exhaustion.
+
+For the v5 workspace correction, an additional 600-layout seed-70007 comparison
+used 32 fixed vector slots (8 GPUs × 4 envs). Under the legacy sampler, the
+1-cube target histogram across six Y bands was `[55, 34, 0, 0, 46, 51]` and
+only 16/24 X/Y cells were occupied. The Y-balanced sampler produced
+`[22, 39, 39, 35, 32, 19]`, occupied 24/24 cells, and reported zero tray
+overlaps. The sampler also records `position_stratum` in every scenario so this
+contract can be audited after generation. Arena uses the same 4×6/Y-first
+contract and retains a hard tray-footprint-plus-4-cm rejection check.
 
 ### Analyze trajectory coverage and scenario success
 
@@ -486,6 +502,8 @@ episode_metrics.csv
 scenario_success.csv
 failure_causes.csv
 solver_recovery_outcomes.csv
+workspace_coverage.png
+workspace_coverage.csv
 scenario_summary.json
 ```
 
@@ -496,6 +514,11 @@ frames, durations, measured path lengths, and X/Y/Z ranges and spans.
 `failure_analysis.png` adds terminal failure reasons, failed FSM states,
 success/failure by total solver-recovery use, and failed-state counts by blue-cube
 scenario. The matching JSON/CSV files retain episode-level reasons and retry counts.
+`workspace_coverage.png` adds per-scenario blue-target spawn scatter plots and
+annotated 4×6 occupancy heatmaps; `workspace_coverage.csv` records every target
+XYZ, target index, selected stratum, tray center, and episode result. The same
+coverage statistics, including occupied cells and count CV, are embedded in
+`scenario_summary.json`.
 
 Bundled analysis figures:
 

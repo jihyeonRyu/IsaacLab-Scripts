@@ -229,6 +229,13 @@ if [ ! -f "${RAW_DATASET}/multi_gpu_summary.json" ]; then
         --height 256 \
         --no_realtime \
         --seed "${GENERATION_SEED}" \
+        --workspace_x_min 0.33 \
+        --workspace_x_max 0.70 \
+        --workspace_y_min -0.34 \
+        --workspace_y_max 0.34 \
+        --workspace_radius_max 0.68 \
+        --stratified_target_positions \
+        --target_workspace_bins 4 6 \
         --randomize_start_pose \
         --start_ee_x_range 0.36 0.70 \
         --start_ee_y_range -0.34 0.34 \
