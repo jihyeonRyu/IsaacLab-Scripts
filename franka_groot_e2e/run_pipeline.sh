@@ -408,6 +408,7 @@ IFS=$'\t' read -r \
             --episode-sampling-rate "${EPISODE_SAMPLING_RATE}" \
             --global-batch-size "${GLOBAL_BATCH_SIZE}" \
             --max-steps 1 \
+            --allow-incomplete-pass \
             --output "${STATE_DIR}/frame_coverage_probe.json" \
             --format tsv
     )
