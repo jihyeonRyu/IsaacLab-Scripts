@@ -6,9 +6,11 @@ fine-tuning GR00T N1.7, and evaluating the checkpoint in IsaacLab Arena. The
 scripts use the two verified fork branches below; model weights and generated
 datasets remain outside Git.
 
-> **Reference run:** all bundled assets and metrics below come from the completed
-> v4 no-detour run on 2026-07-24. They are real generation, analysis, SFT, and
-> 300-episode Arena outputs rather than placeholders.
+> **Reference status (2026-07-25):** generation videos and analysis artifacts
+> come from the completed v5 seed-70007 dataset. Corrected frame-exhaustive v6
+> EMA SFT and its 300-episode Arena evaluation are in progress. Until that run
+> completes, the bundled attention and Arena assets remain explicitly labelled
+> archived v4 evidence rather than v6 results.
 
 ## Package layout
 
@@ -36,15 +38,19 @@ evaluation is executed from `IsaacLab-Arena:jryu/franka-demo`
 (`isaaclab_arena_gr00t/parallel_evaluation.py`). Do not copy those implementation
 files into this repository; each fork branch is its own source of truth.
 
-The bundled assets are compact evidence from one internally consistent run:
+The bundled assets currently have two explicit provenance groups:
 
-- generation videos and all analysis artifacts come from the v4 600-attempt,
-  seed-60007 dataset;
-- attention maps come from the v4 `checkpoint-10000` for retained dataset
-  episodes 0–3;
-- Arena results come from that same checkpoint, with 100 evaluation episodes
-  for each of the 1-, 2-, and 3-blue-cube tasks and seeds outside the
-  generation range.
+- generation videos and all analysis artifacts come from the v5 600-attempt,
+  seed-70007 dataset;
+- the temporarily retained attention maps come from the archived v4
+  `checkpoint-10000` for retained dataset episodes 0–3;
+- the temporarily retained Arena results come from that same archived v4
+  checkpoint, with 100 evaluation episodes for each of the 1-, 2-, and
+  3-blue-cube tasks and seeds outside the generation range.
+
+The v4 attention and Arena files are replaced only after the v6 EMA checkpoint
+and all 300 v6 evaluation episodes pass their completeness checks. This avoids
+presenting a partial v6 evaluation as a final result.
 
 ## E2E stages
 
@@ -162,14 +168,17 @@ The GR00T runtime receives `HF_HOME`, `BASE_MODEL_PATH`, and
 
 `run_pipeline.sh` validates generation and then runs analysis,
 successful-episode LeRobot conversion, 8-GPU SFT, and
-100-episode-per-task Arena evaluation in order. `run_v4_no_detour.sh` supplies
-the completed v4 paths and generation arguments. Each completed stage has a
-marker under `/workspace/output/franka_e2e_pipeline_no_detour_recovery_v4`, so
-rerunning the supervisor resumes after the last completed stage.
+100-episode-per-task Arena evaluation in order. The current complete-data
+launcher is `run_v5_waypoint10_recovery1.sh`; `run_v6_augfix_ema.sh` reuses that
+validated LeRobot dataset and runs the corrected SFT, EMA attention probes, and
+Arena evaluation. Each stage writes a completion marker in its dedicated state
+directory so rerunning the same supervisor resumes after the last completed
+stage.
 
 ```bash
-nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/run_v4_no_detour.sh \
-  > /workspace/output/franka_e2e_pipeline_no_detour_recovery_v4.log 2>&1 &
+nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/run_v5_waypoint10_recovery1.sh \
+  --workspace-root /workspace \
+  > /workspace/output/franka_e2e_pipeline_waypoint10_recovery1_v5.log 2>&1 &
 ```
 
 Closing the terminal or the client computer does not stop this server-side job.
@@ -401,14 +410,29 @@ python /workspace/IsaacLab-Scripts/franka_groot_e2e/scripts/01_generate/franka_l
   --gpu_ids 0 1 2 3 4 5 6 7 \
   --asset_version_override 5.1 \
   --sensor_modalities rgb \
-  --output_dir /workspace/output/franka_no_detour_posture_recovery_600eps_seed60007_v4 \
+  --output_dir /workspace/output/franka_waypoint10_recovery1_600eps_seed70007_v5 \
   --fps 15 \
   --width 320 \
   --height 256 \
   --no_realtime \
-  --seed 60007 \
-  --recovery_waypoint_prob 0.0 \
-  --solver_recovery_max_attempts 3
+  --seed 70007 \
+  --workspace_x_min 0.33 \
+  --workspace_x_max 0.70 \
+  --workspace_y_min -0.34 \
+  --workspace_y_max 0.34 \
+  --workspace_radius_max 0.68 \
+  --stratified_target_positions \
+  --target_workspace_bins 4 6 \
+  --randomize_start_pose \
+  --start_ee_x_range 0.36 0.70 \
+  --start_ee_y_range -0.34 0.34 \
+  --start_ee_z_range 0.25 0.55 \
+  --start_ee_radius_min 0.40 \
+  --start_ee_radius_max 0.72 \
+  --recovery_waypoint_prob 0.10 \
+  --recovery_waypoint_radius_range 0.04 0.08 \
+  --recovery_waypoint_height_range 0.12 0.18 \
+  --solver_recovery_max_attempts 1
 ```
 
 The automatic mode enables action/state logs, external and wrist RGB capture, and MP4 output. Successful episodes have `logs/result.json` with `completed=true` and `failed=false`.
@@ -417,8 +441,8 @@ Bundled successful external-camera examples from the training dataset:
 
 | scenario | episode | video |
 | --- | ---: | --- |
-| one blue cube | 497 | [MP4](assets/01_generation/one_cube_success_episode_000497.mp4) |
-| three blue cubes | 361 | [MP4](assets/01_generation/three_cubes_success_episode_000361.mp4) |
+| one blue cube | 136 | [MP4](assets/01_generation/one_cube_success_episode_000136.mp4) |
+| three blue cubes | 86 | [MP4](assets/01_generation/three_cubes_success_episode_000086.mp4) |
 
 Current generation defaults:
 
@@ -430,12 +454,12 @@ Current generation defaults:
   all X cells in the requested Y band are tested before falling back to another
   band, and every candidate must remain outside the tray footprint plus the
   configured 4 cm clearance;
-- the completed v4 dataset disables deliberate pre-grasp off-target waypoints
-  with `recovery_waypoint_prob=0.0`;
+- the completed v5 dataset applies a short, successful pre-grasp off-target
+  waypoint to 10% of targets, with a 4–8 cm lateral radius and 12–18 cm height;
 - yaw alignment is followed by a 6 mm post-yaw recenter, and XY centering remains enforced while descending and closing;
 - an IK stall while holding a cube raises vertically at fixed XY before retrying placement; an unladen stall uses safe raise, neutral recenter, and an optional restoration of the validated floor-facing tool quaternion;
 - quaternion restoration follows the shortest arc while holding the neutral EEF position; after 480 control steps it continues with a logged partial recovery when the tool is already inside the validated floor-facing tilt limit, so an unreachable exact quaternion cannot create a new terminal failure;
-- solver recovery allows up to 3 retries per cube before marking the episode failed;
+- solver recovery allows one retry per cube before marking the episode failed;
 - when domain randomization is enabled, each background RGB channel is sampled independently over the full `[0, 1]` range; task lighting remains near-neutral.
 
 ### v4 no-detour ablation
@@ -530,8 +554,8 @@ cd /workspace/IsaacLab-Scripts
 source /workspace/env_isaaclab/bin/activate
 
 python /workspace/IsaacLab-Scripts/franka_groot_e2e/scripts/01_generate/analyze_franka_trajectories.py \
-  /workspace/output/franka_no_detour_posture_recovery_600eps_seed60007_v4 \
-  --output-dir /workspace/output/franka_no_detour_posture_recovery_600eps_seed60007_v4/trajectory_analysis
+  /workspace/output/franka_waypoint10_recovery1_600eps_seed70007_v5 \
+  --output-dir /workspace/output/franka_waypoint10_recovery1_600eps_seed70007_v5/trajectory_analysis
 ```
 
 Outputs:
@@ -575,9 +599,9 @@ Bundled analysis figures:
   <img src="assets/02_analysis/failure_analysis.png" width="49%" alt="Failure cause analysis from the latest 600 episode run">
 </p>
 
-All four figures describe the v4 training source. The measured EEF range was
-X `0.3568–0.7251 m`, Y `-0.3552–0.3549 m`, and Z `0.0208–0.5463 m`.
-There were 51 failures: 47 `solver_recovery_exhausted`, three `state_timeout`,
+All four figures describe the v5 training source. The measured EEF range was
+X `0.3520–0.7270 m`, Y `-0.3714–0.3316 m`, and Z `0.0246–0.5449 m`.
+There were 83 failures: 80 `solver_recovery_exhausted`, two `state_timeout`,
 and one `placement_verification`. Exact counts are in
 [failure_analysis.json](assets/02_analysis/failure_analysis.json), with the
 full scenario summary in
@@ -590,8 +614,8 @@ cd /workspace/Isaac-GR00T
 source .venv/bin/activate
 
 python /workspace/IsaacLab-Scripts/franka_groot_e2e/scripts/02_convert/convert_franka_to_groot_lerobot.py \
-  /workspace/output/franka_no_detour_posture_recovery_600eps_seed60007_v4 \
-  /workspace/datasets/franka_no_detour_posture_recovery_seed60007_v4_lerobot
+  /workspace/output/franka_waypoint10_recovery1_600eps_seed70007_v5 \
+  /workspace/datasets/franka_waypoint10_recovery1_seed70007_v5_lerobot
 ```
 
 The converter:
@@ -607,9 +631,10 @@ Use `--allow-incomplete` only when intentionally skipping malformed recordings. 
 
 ### Current converted dataset specification
 
-- Dataset: `/workspace/datasets/franka_no_detour_posture_recovery_seed60007_v4_lerobot` (LeRobot v2.1)
-- Episodes: 549
-- Total frames: 359,549 at 15 FPS
+- Dataset: `/workspace/datasets/franka_waypoint10_recovery1_seed70007_v5_lerobot` (LeRobot v2.1)
+- Episodes: 517
+- Total frames: 309,163 at 15 FPS
+- Valid 40-frame training windows: 289,000
 - Cameras: `external` and `wrist`, RGB 320×256
 - Image input: current frame only (`delta_indices=[0]`)
 - Robot state: current absolute EEF XYZ + rotation 6D and gripper width (10D total)
@@ -628,14 +653,14 @@ action[t:t+40]
 → diffusion action-head target
 ```
 
-The v4 generation completion and retained training data by blue-cube count are:
+The v5 generation completion and retained training data by blue-cube count are:
 
 | blue cubes | attempts | successful/retained episodes | generation success | retained frames |
 | ---: | ---: | ---: | ---: | ---: |
-| 1 | 202 | 187 | 92.57% | 62,387 |
-| 2 | 205 | 195 | 95.12% | 130,538 |
-| 3 | 193 | 167 | 86.53% | 166,624 |
-| total | 600 | 549 | 91.50% | 359,549 |
+| 1 | 186 | 179 | 96.24% | 55,148 |
+| 2 | 192 | 166 | 86.46% | 99,695 |
+| 3 | 222 | 172 | 77.48% | 154,320 |
+| total | 600 | 517 | 86.17% | 309,163 |
 
 These generation rates measure scripted data-generation completion. They are not
 the trained policy's Arena evaluation success rates.
@@ -657,9 +682,12 @@ The current defaults are the reproducible full-run settings:
 
 - 8 GPUs and global batch size 128 (16 samples per GPU, no gradient accumulation);
 - 10,000 optimizer steps, checkpoint every 250 steps;
+- LR `1e-4`, cosine decay, 5% warmup, and weight decay `1e-5`;
+- 565 balanced shards containing all 289,000 valid frame windows;
 - `crop_fraction=0.98` with shortest image edge 256;
-- state dropout 0.20;
+- action-head state dropout 0.20 and processor state dropout 0.0;
 - brightness/contrast/saturation/hue jitter 0.25/0.25/0.30/0.03;
+- FP32 EMA with decay 0.999, updated after every optimizer step;
 - W&B online project `franka-gr00t`;
 - frozen visual-language reasoner (`TUNE_LLM=0`), with projector and diffusion head trained;
 - four debug samples (episodes 0, 1, 2, and 3 at frame 120) at every saved checkpoint.
@@ -682,12 +710,27 @@ images are under:
   checkpoint-10000-ep{0,1,2,3}-step120.png
 ```
 
+The corrected frame-exhaustive v6 run writes its raw checkpoints and final EMA
+checkpoint under:
+
+```text
+/workspace/Isaac-GR00T/outputs/franka-groot-sft/
+  franka-blue-cube-sft-fixedtray-waypoint10-recovery1-v6-augfix-ema/
+  checkpoint-10000-ema
+```
+
+Its online W&B run is
+`nv-default-onboard/franka-gr00t/0l1wdonj`. Final performance values in this
+document must use the EMA checkpoint, not the interrupted v5 baseline.
+
 The reasoner attention panels use the dataset task prompt stored in LeRobot metadata.
 They show Cosmos attention for that prompt and input image. With `TUNE_LLM=0`, raw
 reasoner attention is expected to remain mostly fixed; action saliency can still change
 because the projector and action head are trained.
 
-Final checkpoint attention examples, all evaluated with the dataset task prompt:
+Temporarily retained archived-v4 attention examples, all evaluated with the
+dataset task prompt. These four files are replaced by the v6 EMA probes after
+the running pipeline completes:
 
 <p>
   <img src="assets/03_sft_attention/checkpoint_10000_episode_0_step_120.png" width="49%" alt="Checkpoint 10000 attention map, episode 0">
@@ -721,14 +764,14 @@ cd /workspace/IsaacLab-Arena
 source .venv/bin/activate
 
 python /workspace/IsaacLab-Arena/isaaclab_arena_gr00t/parallel_evaluation.py \
-  --checkpoint /workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-sft-fixedtray-no-detour-recovery-v4/checkpoint-10000 \
+  --checkpoint /workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-sft-fixedtray-waypoint10-recovery1-v6-augfix-ema/checkpoint-10000-ema \
   --num-gpus 8 \
   --episodes-per-task 100 \
-  --base-port 5655 \
-  --output-dir /workspace/IsaacLab-Arena/outputs/franka-gr00t-parallel/fixedtray-no-detour-recovery-v4-generation-aligned-8gpu-100eps
+  --base-port 5755 \
+  --output-dir /workspace/IsaacLab-Arena/outputs/franka-gr00t-parallel/fixedtray-waypoint10-recovery1-v6-augfix-ema-generation-aligned-8gpu-100eps
 ```
 
-Port 5655 is used because another service may occupy the default port 5555. The
+Port 5755 is used because another service may occupy the default port 5555. The
 launcher checks all requested GPUs, model/config paths, and the complete port range
 before starting any child process. It also supplies the local Cosmos path and required
 Isaac Sim EULA environment variables.
@@ -751,7 +794,7 @@ Each task starts in a new Isaac Sim process, and the launcher passes synchronous
 RTX geometry-loading arguments. This avoids stale Fabric/RTX transforms after
 stage rebuilds. Arena uses the same generation-aligned camera, lighting, fixed
 5 cm cube geometry, workspace, reset settling, and randomized collision-safe
-start-pose setup as the v4 generator. Only the evaluation seeds differ. The
+start-pose setup as the v5 generator. Only the evaluation seeds differ. The
 unrecorded setup motion is solver-driven; every recorded task action is produced
 by the GR00T policy.
 
@@ -777,7 +820,8 @@ step into a 60 FPS MP4, so each 15 Hz camera image is repeated for four video
 frames. The bundled Arena MP4s are therefore 60 FPS containers with a 15 Hz
 effective visual refresh; generation MP4s are native 15 FPS.
 
-Final trained-policy success by blue-cube count:
+Archived trained-policy success by blue-cube count. This table is v3/v4
+historical evidence and is not the result of the running v6 EMA evaluation:
 
 | blue cubes | v3 successes/rate | v4 successes/rate | v4 − v3 |
 | ---: | ---: | ---: | ---: |
@@ -812,28 +856,27 @@ count, not 16 Hz. Each action advances at `policy_hz=15`, matching the 15 FPS
 training data, while 60 Hz control interpolation supplies four control steps per
 policy action. Consequently Arena replans after about `16/15 = 1.07` seconds.
 
-A 24-action training horizon is a reasonable later ablation (1.6 seconds at
-15 Hz), but v5 deliberately keeps 40 so its only data-policy changes are the
-10% successful pre-grasp waypoint and one recovery attempt. Changing horizon to
-24 in the same run would confound that comparison. If v5 establishes a baseline,
-run a separate v6 with only the training horizon changed while retaining Arena's
-16-action execution chunk.
+A 24-action training horizon remains a reasonable later ablation (1.6 seconds
+at 15 Hz), but the current v6 deliberately keeps the v5 dataset's 40-action
+target so the corrected sampling, processor, and EMA changes can be evaluated
+without also changing the temporal target. Test horizon 24 separately while
+retaining Arena's 16-action execution chunk.
 
-### Recommended next collection
+### Controlled follow-ups after the v6 result
 
-For the next controlled run, keep the deliberate near-cube waypoint disabled
-and keep failure-triggered recovery, but change one factor at a time:
+Do not start another collection until the v6 EMA Arena result is complete.
+Afterward, change one factor at a time while retaining the same scene and
+evaluation seeds:
 
 - sample 70–80% of randomized starts from the nominal/evaluation-relevant
   workspace and only 20–30% from the widened edge envelope, instead of spreading
   all samples uniformly over the broad range;
-- retain successful one- and two-attempt recovery trajectories, but separately
-  tag or down-weight three-attempt trajectories; in v4, 0/1/2-attempt episodes
-  completed at 99.34%, 98.15%, and 100%, while the three-attempt group completed
-  at 22.22%;
-- collect targeted successful re-centering examples for `approach`,
-  `align_yaw`, and `move_above_slot`, which account for 42 of the 51 generator
-  failures;
+- compare the current 10% successful pre-grasp waypoint against 0% using the
+  same collection seed and sample count;
+- compare the current one-attempt failure recovery against a separately tagged
+  two-attempt collection;
+- collect targeted successful re-centering examples for the v5 failure states
+  represented by the 80 `solver_recovery_exhausted` episodes;
 - balance by successful pick-place transitions as well as episode count, and
   preserve a denser nominal distribution for the repeated second/third pick.
 
@@ -843,13 +886,12 @@ and makes the comparison attributable.
 
 ## Verified in this container
 
-- 600 v4 generation attempts produced 549 valid LeRobot v2.1 episodes and 359,549 frames at 15 FPS.
-- The trajectory analyzer reproduced the generator outcomes by cube count: 187/202 for one cube, 195/205 for two cubes, and 167/193 for three cubes.
-- Deliberate near-cube waypoint use was zero; failure-triggered solver recovery remained enabled.
+- 600 v5 generation attempts produced 517 valid LeRobot v2.1 episodes and 309,163 frames at 15 FPS.
+- The trajectory analyzer reproduced the generator outcomes by cube count: 179/186 for one cube, 166/192 for two cubes, and 172/222 for three cubes.
+- The v5 collection used a 10% successful pre-grasp waypoint and at most one failure-triggered solver retry per cube.
 - The converted dataset has external/wrist RGB `(256, 320, 3)`, EEF pose state 9D plus gripper 1D, and EEF delta action 6D plus gripper 1D.
+- All 517 parquet episodes, 309,163 rows, and 1,034 camera videos passed the conversion integrity audit; there were no NaN/Inf values or frame-index gaps.
+- The frame-coverage audit found 289,000 valid 40-frame windows, 565 balanced shards, and 2,258 minimum optimizer steps per full pass at global batch 128.
 - GR00T N1.7 and Cosmos Reason2 load from `/workspace/models` without a runtime Hugging Face download.
-- The 8-GPU v4 training run reached step 10,000 in 5,669.8 seconds and wrote a complete `checkpoint-10000`.
-- All 160 scheduled attention/debug images were produced; the bundled four are checkpoint-10,000 episodes 0–3.
-- Arena cameras match generation at 15 FPS and 320×256 for both external and wrist views.
-- The aligned 8-GPU Arena evaluation produced exactly 300 JSONL results and 600 MP4s with no fatal worker errors.
-- The v4 evaluation completed 100 episodes per task: 74% for one cube, 30% for two cubes, and 11% for three cubes.
+- The corrected 8-GPU v6 SFT is running with 10,000 steps, FP32 EMA decay 0.999, and online W&B logging.
+- Archived v4 attention/Arena assets remain bundled only until the v6 EMA attention and complete 100-episode-per-task evaluation are validated.

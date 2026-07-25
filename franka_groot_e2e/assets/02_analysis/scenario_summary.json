@@ -1,10 +1,10 @@
 {
-  "input_root": "/workspace/output/franka_no_detour_posture_recovery_600eps_seed60007_v4",
+  "input_root": "/workspace/output/franka_waypoint10_recovery1_600eps_seed70007_v5",
   "trajectory_source": "logs/states.jsonl:ee_pos_env",
   "episodes": 600,
-  "successful_episodes": 549,
-  "failed_episodes": 51,
-  "success_rate_pct": 91.5,
+  "successful_episodes": 517,
+  "failed_episodes": 83,
+  "success_rate_pct": 86.16666666666667,
   "blue_cube_counts": [
     1,
     2,
@@ -13,232 +13,236 @@
   "scenario_statistics": [
     {
       "blue_cube_count": 1,
-      "episodes": 202,
-      "successful_episodes": 187,
-      "failed_episodes": 15,
-      "success_rate_pct": 92.57425742574257,
-      "trajectory_points": 76955,
-      "mean_frames": 380.96534653465346,
-      "mean_duration_s": 25.331023102310233,
-      "mean_path_length_m": 1.443783142963659,
-      "median_path_length_m": 1.2268059455682214,
-      "recovery_planned_episodes": 0,
-      "recovery_completed_episodes": 0,
-      "solver_recovery_attempts": 58,
-      "x_min_m": 0.3592437505722046,
-      "x_max_m": 0.6843502521514893,
-      "x_span_m": 0.32510650157928467,
-      "y_min_m": -0.32691800594329834,
-      "y_max_m": 0.3549196720123291,
-      "y_span_m": 0.6818376779556274,
-      "z_min_m": 0.020810015499591827,
-      "z_max_m": 0.5462921857833862,
-      "z_span_m": 0.5254821702837944
+      "episodes": 186,
+      "successful_episodes": 179,
+      "failed_episodes": 7,
+      "success_rate_pct": 96.23655913978494,
+      "trajectory_points": 58415,
+      "mean_frames": 314.05913978494624,
+      "mean_duration_s": 20.870609318996415,
+      "mean_path_length_m": 1.142388020660117,
+      "median_path_length_m": 1.101902679985413,
+      "recovery_planned_episodes": 16,
+      "recovery_completed_episodes": 16,
+      "solver_recovery_attempts": 13,
+      "x_min_m": 0.3520117998123169,
+      "x_max_m": 0.7115081548690796,
+      "x_span_m": 0.3594963550567627,
+      "y_min_m": -0.32721972465515137,
+      "y_max_m": 0.32685112953186035,
+      "y_span_m": 0.6540708541870117,
+      "z_min_m": 0.026958376169204712,
+      "z_max_m": 0.53922039270401,
+      "z_span_m": 0.5122620165348053
     },
     {
       "blue_cube_count": 2,
-      "episodes": 205,
-      "successful_episodes": 195,
-      "failed_episodes": 10,
-      "success_rate_pct": 95.1219512195122,
-      "trajectory_points": 142527,
-      "mean_frames": 695.2536585365854,
-      "mean_duration_s": 46.28357723577236,
-      "mean_path_length_m": 2.5173415356318856,
-      "median_path_length_m": 2.2767733990837904,
-      "recovery_planned_episodes": 0,
-      "recovery_completed_episodes": 0,
-      "solver_recovery_attempts": 78,
-      "x_min_m": 0.3576009273529053,
-      "x_max_m": 0.6879382133483887,
-      "x_span_m": 0.3303372859954834,
-      "y_min_m": -0.3257787227630615,
-      "y_max_m": 0.320385217666626,
-      "y_span_m": 0.6461639404296875,
-      "z_min_m": 0.021320104598999023,
-      "z_max_m": 0.5436322093009949,
-      "z_span_m": 0.5223121047019958
+      "episodes": 192,
+      "successful_episodes": 166,
+      "failed_episodes": 26,
+      "success_rate_pct": 86.45833333333333,
+      "trajectory_points": 118520,
+      "mean_frames": 617.2916666666666,
+      "mean_duration_s": 41.086111111111116,
+      "mean_path_length_m": 2.1790283714747978,
+      "median_path_length_m": 2.089912213370999,
+      "recovery_planned_episodes": 30,
+      "recovery_completed_episodes": 16,
+      "solver_recovery_attempts": 41,
+      "x_min_m": 0.36353111267089844,
+      "x_max_m": 0.6874445676803589,
+      "x_span_m": 0.32391345500946045,
+      "y_min_m": -0.321735143661499,
+      "y_max_m": 0.3277914524078369,
+      "y_span_m": 0.6495265960693359,
+      "z_min_m": 0.024626411497592926,
+      "z_max_m": 0.5449382662773132,
+      "z_span_m": 0.5203118547797203
     },
     {
       "blue_cube_count": 3,
-      "episodes": 193,
-      "successful_episodes": 167,
-      "failed_episodes": 26,
-      "success_rate_pct": 86.52849740932642,
-      "trajectory_points": 201545,
-      "mean_frames": 1044.2746113989638,
-      "mean_duration_s": 69.55164075993092,
-      "mean_path_length_m": 3.707476657989307,
-      "median_path_length_m": 3.374478273146729,
-      "recovery_planned_episodes": 0,
-      "recovery_completed_episodes": 0,
-      "solver_recovery_attempts": 103,
-      "x_min_m": 0.3568000793457031,
-      "x_max_m": 0.7250921726226807,
-      "x_span_m": 0.36829209327697754,
-      "y_min_m": -0.3552277088165283,
-      "y_max_m": 0.32629120349884033,
-      "y_span_m": 0.6815189123153687,
-      "z_min_m": 0.021182022988796234,
-      "z_max_m": 0.5436261296272278,
-      "z_span_m": 0.5224441066384315
+      "episodes": 222,
+      "successful_episodes": 172,
+      "failed_episodes": 50,
+      "success_rate_pct": 77.47747747747748,
+      "trajectory_points": 195581,
+      "mean_frames": 880.9954954954954,
+      "mean_duration_s": 58.66636636636637,
+      "mean_path_length_m": 3.133694695944948,
+      "median_path_length_m": 3.0940638062813397,
+      "recovery_planned_episodes": 65,
+      "recovery_completed_episodes": 24,
+      "solver_recovery_attempts": 70,
+      "x_min_m": 0.35874080657958984,
+      "x_max_m": 0.7270190715789795,
+      "x_span_m": 0.36827826499938965,
+      "y_min_m": -0.3713878393173218,
+      "y_max_m": 0.33156466484069824,
+      "y_span_m": 0.70295250415802,
+      "z_min_m": 0.025372013449668884,
+      "z_max_m": 0.5444222688674927,
+      "z_span_m": 0.5190502554178238
     }
   ],
   "failure_analysis": {
-    "total_failures": 51,
+    "total_failures": 83,
     "failure_reason_counts": [
       {
         "failure_reason": "solver_recovery_exhausted",
-        "count": 47,
-        "pct_of_failures": 92.15686274509804
+        "count": 80,
+        "pct_of_failures": 96.3855421686747
       },
       {
         "failure_reason": "state_timeout",
-        "count": 3,
-        "pct_of_failures": 5.882352941176471
+        "count": 2,
+        "pct_of_failures": 2.4096385542168677
       },
       {
         "failure_reason": "placement_verification",
         "count": 1,
-        "pct_of_failures": 1.9607843137254901
+        "pct_of_failures": 1.2048192771084338
       }
     ],
     "failed_state_counts": [
       {
-        "failed_state": "approach",
-        "count": 26,
-        "pct_of_failures": 50.98039215686274
+        "failed_state": "move_above_slot",
+        "count": 37,
+        "pct_of_failures": 44.57831325301205
       },
       {
         "failed_state": "align_yaw",
-        "count": 9,
-        "pct_of_failures": 17.647058823529413
+        "count": 16,
+        "pct_of_failures": 19.27710843373494
       },
       {
-        "failed_state": "move_above_slot",
-        "count": 7,
-        "pct_of_failures": 13.72549019607843
+        "failed_state": "approach",
+        "count": 13,
+        "pct_of_failures": 15.662650602409638
       },
       {
         "failed_state": "place_descend",
-        "count": 3,
-        "pct_of_failures": 5.882352941176471
-      },
-      {
-        "failed_state": "retreat",
-        "count": 3,
-        "pct_of_failures": 5.882352941176471
+        "count": 8,
+        "pct_of_failures": 9.63855421686747
       },
       {
         "failed_state": "descend",
+        "count": 5,
+        "pct_of_failures": 6.024096385542169
+      },
+      {
+        "failed_state": "retreat",
         "count": 2,
-        "pct_of_failures": 3.9215686274509802
+        "pct_of_failures": 2.4096385542168677
       },
       {
         "failed_state": "solver_recovery_raise",
         "count": 1,
-        "pct_of_failures": 1.9607843137254901
+        "pct_of_failures": 1.2048192771084338
+      },
+      {
+        "failed_state": "recenter_after_yaw",
+        "count": 1,
+        "pct_of_failures": 1.2048192771084338
       }
     ],
     "solver_recovery_outcomes": [
       {
         "solver_recovery_total_attempts": 0,
-        "episodes": 457,
-        "successful_episodes": 454,
-        "failed_episodes": 3,
-        "success_rate_pct": 99.34354485776805
+        "episodes": 467,
+        "successful_episodes": 465,
+        "failed_episodes": 2,
+        "success_rate_pct": 99.57173447537473
       },
       {
         "solver_recovery_total_attempts": 1,
-        "episodes": 54,
-        "successful_episodes": 53,
-        "failed_episodes": 1,
-        "success_rate_pct": 98.14814814814815
+        "episodes": 125,
+        "successful_episodes": 46,
+        "failed_episodes": 79,
+        "success_rate_pct": 36.8
       },
       {
         "solver_recovery_total_attempts": 2,
-        "episodes": 26,
-        "successful_episodes": 26,
-        "failed_episodes": 0,
-        "success_rate_pct": 100.0
-      },
-      {
-        "solver_recovery_total_attempts": 3,
-        "episodes": 54,
-        "successful_episodes": 12,
-        "failed_episodes": 42,
-        "success_rate_pct": 22.22222222222222
-      },
-      {
-        "solver_recovery_total_attempts": 4,
         "episodes": 8,
-        "successful_episodes": 3,
-        "failed_episodes": 5,
-        "success_rate_pct": 37.5
-      },
-      {
-        "solver_recovery_total_attempts": 6,
-        "episodes": 1,
-        "successful_episodes": 1,
-        "failed_episodes": 0,
-        "success_rate_pct": 100.0
+        "successful_episodes": 6,
+        "failed_episodes": 2,
+        "success_rate_pct": 75.0
       }
     ],
     "failed_states_by_blue_cube_count": [
       {
         "blue_cube_count": 1,
         "failed_state": "align_yaw",
-        "count": 3
+        "count": 1
       },
       {
         "blue_cube_count": 1,
         "failed_state": "approach",
-        "count": 12
+        "count": 3
       },
       {
-        "blue_cube_count": 2,
-        "failed_state": "approach",
-        "count": 6
+        "blue_cube_count": 1,
+        "failed_state": "move_above_slot",
+        "count": 2
       },
       {
-        "blue_cube_count": 2,
-        "failed_state": "descend",
+        "blue_cube_count": 1,
+        "failed_state": "retreat",
         "count": 1
       },
       {
         "blue_cube_count": 2,
+        "failed_state": "align_yaw",
+        "count": 7
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "approach",
+        "count": 4
+      },
+      {
+        "blue_cube_count": 2,
         "failed_state": "move_above_slot",
-        "count": 3
+        "count": 13
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "place_descend",
+        "count": 2
       },
       {
         "blue_cube_count": 3,
         "failed_state": "align_yaw",
-        "count": 6
-      },
-      {
-        "blue_cube_count": 3,
-        "failed_state": "approach",
         "count": 8
       },
       {
         "blue_cube_count": 3,
+        "failed_state": "approach",
+        "count": 6
+      },
+      {
+        "blue_cube_count": 3,
         "failed_state": "descend",
-        "count": 1
+        "count": 5
       },
       {
         "blue_cube_count": 3,
         "failed_state": "move_above_slot",
-        "count": 4
+        "count": 22
       },
       {
         "blue_cube_count": 3,
         "failed_state": "place_descend",
-        "count": 3
+        "count": 6
+      },
+      {
+        "blue_cube_count": 3,
+        "failed_state": "recenter_after_yaw",
+        "count": 1
       },
       {
         "blue_cube_count": 3,
         "failed_state": "retreat",
-        "count": 3
+        "count": 1
       },
       {
         "blue_cube_count": 3,
@@ -246,6 +250,308 @@
         "count": 1
       }
     ]
+  },
+  "workspace_coverage": {
+    "1": {
+      "workspace_bounds": [
+        0.33,
+        0.7,
+        -0.34,
+        0.34
+      ],
+      "workspace_bins": [
+        4,
+        6
+      ],
+      "all_targets": {
+        "samples": 186,
+        "occupied_cells": 24,
+        "total_cells": 24,
+        "cell_count_cv": 0.509704640623283,
+        "cell_counts": [
+          [
+            5,
+            9,
+            6,
+            7,
+            6,
+            1
+          ],
+          [
+            8,
+            14,
+            15,
+            14,
+            7,
+            4
+          ],
+          [
+            11,
+            12,
+            9,
+            12,
+            8,
+            8
+          ],
+          [
+            1,
+            7,
+            10,
+            8,
+            3,
+            1
+          ]
+        ],
+        "x_min_m": 0.3697139296097336,
+        "x_max_m": 0.6597080941104851,
+        "y_min_m": -0.2970045916923651,
+        "y_max_m": 0.291872447138767
+      },
+      "first_target": {
+        "samples": 186,
+        "occupied_cells": 24,
+        "total_cells": 24,
+        "cell_count_cv": 0.509704640623283,
+        "cell_counts": [
+          [
+            5,
+            9,
+            6,
+            7,
+            6,
+            1
+          ],
+          [
+            8,
+            14,
+            15,
+            14,
+            7,
+            4
+          ],
+          [
+            11,
+            12,
+            9,
+            12,
+            8,
+            8
+          ],
+          [
+            1,
+            7,
+            10,
+            8,
+            3,
+            1
+          ]
+        ],
+        "x_min_m": 0.3697139296097336,
+        "x_max_m": 0.6597080941104851,
+        "y_min_m": -0.2970045916923651,
+        "y_max_m": 0.291872447138767
+      }
+    },
+    "2": {
+      "workspace_bounds": [
+        0.33,
+        0.7,
+        -0.34,
+        0.34
+      ],
+      "workspace_bins": [
+        4,
+        6
+      ],
+      "all_targets": {
+        "samples": 384,
+        "occupied_cells": 24,
+        "total_cells": 24,
+        "cell_count_cv": 0.6056913233377763,
+        "cell_counts": [
+          [
+            9,
+            6,
+            20,
+            24,
+            8,
+            1
+          ],
+          [
+            17,
+            17,
+            31,
+            38,
+            13,
+            7
+          ],
+          [
+            23,
+            17,
+            22,
+            34,
+            18,
+            7
+          ],
+          [
+            3,
+            16,
+            17,
+            22,
+            13,
+            1
+          ]
+        ],
+        "x_min_m": 0.37509495095690754,
+        "x_max_m": 0.6575952359369838,
+        "y_min_m": -0.300212990856467,
+        "y_max_m": 0.29628509630959876
+      },
+      "first_target": {
+        "samples": 192,
+        "occupied_cells": 23,
+        "total_cells": 24,
+        "cell_count_cv": 0.6485159340113908,
+        "cell_counts": [
+          [
+            2,
+            3,
+            9,
+            11,
+            5,
+            1
+          ],
+          [
+            5,
+            12,
+            16,
+            21,
+            8,
+            3
+          ],
+          [
+            10,
+            8,
+            8,
+            18,
+            9,
+            4
+          ],
+          [
+            2,
+            11,
+            8,
+            10,
+            8,
+            0
+          ]
+        ],
+        "x_min_m": 0.37509495095690754,
+        "x_max_m": 0.6571391681344863,
+        "y_min_m": -0.2948477472668469,
+        "y_max_m": 0.29628509630959876
+      }
+    },
+    "3": {
+      "workspace_bounds": [
+        0.33,
+        0.7,
+        -0.34,
+        0.34
+      ],
+      "workspace_bins": [
+        4,
+        6
+      ],
+      "all_targets": {
+        "samples": 666,
+        "occupied_cells": 24,
+        "total_cells": 24,
+        "cell_count_cv": 0.541665496056123,
+        "cell_counts": [
+          [
+            12,
+            36,
+            32,
+            33,
+            12,
+            7
+          ],
+          [
+            17,
+            53,
+            53,
+            40,
+            27,
+            13
+          ],
+          [
+            23,
+            46,
+            51,
+            48,
+            24,
+            13
+          ],
+          [
+            11,
+            31,
+            32,
+            32,
+            18,
+            2
+          ]
+        ],
+        "x_min_m": 0.3664922575382993,
+        "x_max_m": 0.6614599307708677,
+        "y_min_m": -0.29990073563095715,
+        "y_max_m": 0.30325440693172023
+      },
+      "first_target": {
+        "samples": 222,
+        "occupied_cells": 23,
+        "total_cells": 24,
+        "cell_count_cv": 0.6412870550110634,
+        "cell_counts": [
+          [
+            4,
+            12,
+            10,
+            12,
+            3,
+            1
+          ],
+          [
+            5,
+            20,
+            21,
+            11,
+            12,
+            3
+          ],
+          [
+            7,
+            16,
+            18,
+            17,
+            9,
+            3
+          ],
+          [
+            3,
+            6,
+            11,
+            11,
+            7,
+            0
+          ]
+        ],
+        "x_min_m": 0.37193626803775176,
+        "x_max_m": 0.6614599307708677,
+        "y_min_m": -0.2970224397363937,
+        "y_max_m": 0.29677007710795106
+      }
+    }
   },
   "skipped_episodes": [],
   "outputs": {
@@ -257,6 +563,8 @@
     "episode_metrics": "episode_metrics.csv",
     "scenario_success": "scenario_success.csv",
     "failure_causes": "failure_causes.csv",
-    "solver_recovery_outcomes": "solver_recovery_outcomes.csv"
+    "solver_recovery_outcomes": "solver_recovery_outcomes.csv",
+    "workspace_coverage_figure": "workspace_coverage.png",
+    "workspace_coverage_csv": "workspace_coverage.csv"
   }
 }
