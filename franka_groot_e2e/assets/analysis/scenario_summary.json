@@ -1,0 +1,461 @@
+{
+  "input_root": "/workspace/output/franka_partial_progress_1200eps_seed90007",
+  "trajectory_source": "logs/states.jsonl:ee_pos_env",
+  "episodes": 811,
+  "successful_episodes": 740,
+  "failed_episodes": 71,
+  "success_rate_pct": 91.24537607891492,
+  "blue_cube_counts": [
+    1,
+    2
+  ],
+  "scenario_statistics": [
+    {
+      "blue_cube_count": 1,
+      "episodes": 423,
+      "successful_episodes": 406,
+      "failed_episodes": 17,
+      "success_rate_pct": 95.98108747044917,
+      "trajectory_points": 129308,
+      "mean_frames": 305.69267139479905,
+      "mean_duration_s": 20.31284475965327,
+      "mean_path_length_m": 1.1252804519762578,
+      "median_path_length_m": 1.0645133245752332,
+      "recovery_planned_episodes": 48,
+      "recovery_completed_episodes": 48,
+      "solver_recovery_attempts": 28,
+      "x_min_m": 0.35830044746398926,
+      "x_max_m": 0.7162107229232788,
+      "x_span_m": 0.35791027545928955,
+      "y_min_m": -0.32723498344421387,
+      "y_max_m": 0.33378708362579346,
+      "y_span_m": 0.6610220670700073,
+      "z_min_m": 0.02080933004617691,
+      "z_max_m": 0.5455638766288757,
+      "z_span_m": 0.5247545465826988
+    },
+    {
+      "blue_cube_count": 2,
+      "episodes": 388,
+      "successful_episodes": 334,
+      "failed_episodes": 54,
+      "success_rate_pct": 86.08247422680412,
+      "trajectory_points": 215947,
+      "mean_frames": 556.5644329896908,
+      "mean_duration_s": 37.037628865979386,
+      "mean_path_length_m": 2.002314975238043,
+      "median_path_length_m": 1.9996365350987375,
+      "recovery_planned_episodes": 64,
+      "recovery_completed_episodes": 37,
+      "solver_recovery_attempts": 76,
+      "x_min_m": 0.35802578926086426,
+      "x_max_m": 0.6908607482910156,
+      "x_span_m": 0.33283495903015137,
+      "y_min_m": -0.315873384475708,
+      "y_max_m": 0.3263249397277832,
+      "y_span_m": 0.6421983242034912,
+      "z_min_m": 0.021374419331550598,
+      "z_max_m": 0.542716920375824,
+      "z_span_m": 0.5213425010442734
+    }
+  ],
+  "progress_stage_statistics": [
+    {
+      "blue_cube_count": 1,
+      "progress_stage": 0,
+      "num_preplaced": 0,
+      "num_remaining": 1,
+      "episodes": 423,
+      "successful_episodes": 406,
+      "failed_episodes": 17,
+      "success_rate_pct": 95.98108747044917,
+      "trajectory_points": 129308,
+      "mean_frames": 305.69267139479905,
+      "mean_duration_s": 20.31284475965327,
+      "mean_path_length_m": 1.1252804519762578
+    },
+    {
+      "blue_cube_count": 2,
+      "progress_stage": 0,
+      "num_preplaced": 0,
+      "num_remaining": 2,
+      "episodes": 295,
+      "successful_episodes": 245,
+      "failed_episodes": 50,
+      "success_rate_pct": 83.05084745762711,
+      "trajectory_points": 187252,
+      "mean_frames": 634.7525423728814,
+      "mean_duration_s": 42.25016949152542,
+      "mean_path_length_m": 2.270627082842276
+    },
+    {
+      "blue_cube_count": 2,
+      "progress_stage": 1,
+      "num_preplaced": 1,
+      "num_remaining": 1,
+      "episodes": 93,
+      "successful_episodes": 89,
+      "failed_episodes": 4,
+      "success_rate_pct": 95.6989247311828,
+      "trajectory_points": 28695,
+      "mean_frames": 308.5483870967742,
+      "mean_duration_s": 20.50322580645161,
+      "mean_path_length_m": 1.1512174296117124
+    }
+  ],
+  "failure_analysis": {
+    "total_failures": 71,
+    "failure_reason_counts": [
+      {
+        "failure_reason": "solver_recovery_exhausted",
+        "count": 68,
+        "pct_of_failures": 95.77464788732394
+      },
+      {
+        "failure_reason": "state_timeout",
+        "count": 3,
+        "pct_of_failures": 4.225352112676056
+      }
+    ],
+    "failed_state_counts": [
+      {
+        "failed_state": "move_above_slot",
+        "count": 30,
+        "pct_of_failures": 42.25352112676056
+      },
+      {
+        "failed_state": "approach",
+        "count": 24,
+        "pct_of_failures": 33.80281690140845
+      },
+      {
+        "failed_state": "align_yaw",
+        "count": 9,
+        "pct_of_failures": 12.67605633802817
+      },
+      {
+        "failed_state": "retreat",
+        "count": 3,
+        "pct_of_failures": 4.225352112676056
+      },
+      {
+        "failed_state": "place_descend",
+        "count": 2,
+        "pct_of_failures": 2.816901408450704
+      },
+      {
+        "failed_state": "descend",
+        "count": 2,
+        "pct_of_failures": 2.816901408450704
+      },
+      {
+        "failed_state": "recenter_after_yaw",
+        "count": 1,
+        "pct_of_failures": 1.408450704225352
+      }
+    ],
+    "solver_recovery_outcomes": [
+      {
+        "solver_recovery_total_attempts": 0,
+        "episodes": 702,
+        "successful_episodes": 699,
+        "failed_episodes": 3,
+        "success_rate_pct": 99.57264957264957
+      },
+      {
+        "solver_recovery_total_attempts": 1,
+        "episodes": 108,
+        "successful_episodes": 41,
+        "failed_episodes": 67,
+        "success_rate_pct": 37.96296296296296
+      },
+      {
+        "solver_recovery_total_attempts": 2,
+        "episodes": 1,
+        "successful_episodes": 0,
+        "failed_episodes": 1,
+        "success_rate_pct": 0.0
+      }
+    ],
+    "failed_states_by_blue_cube_count": [
+      {
+        "blue_cube_count": 1,
+        "failed_state": "align_yaw",
+        "count": 2
+      },
+      {
+        "blue_cube_count": 1,
+        "failed_state": "approach",
+        "count": 11
+      },
+      {
+        "blue_cube_count": 1,
+        "failed_state": "move_above_slot",
+        "count": 2
+      },
+      {
+        "blue_cube_count": 1,
+        "failed_state": "place_descend",
+        "count": 1
+      },
+      {
+        "blue_cube_count": 1,
+        "failed_state": "retreat",
+        "count": 1
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "align_yaw",
+        "count": 7
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "approach",
+        "count": 13
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "descend",
+        "count": 2
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "move_above_slot",
+        "count": 28
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "place_descend",
+        "count": 1
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "recenter_after_yaw",
+        "count": 1
+      },
+      {
+        "blue_cube_count": 2,
+        "failed_state": "retreat",
+        "count": 2
+      }
+    ]
+  },
+  "workspace_coverage": {
+    "1": {
+      "workspace_bounds": [
+        0.33,
+        0.7,
+        -0.34,
+        0.34
+      ],
+      "workspace_bins": [
+        4,
+        6
+      ],
+      "all_targets": {
+        "samples": 423,
+        "occupied_cells": 24,
+        "total_cells": 24,
+        "cell_count_cv": 0.5635360609943051,
+        "cell_counts": [
+          [
+            8,
+            12,
+            18,
+            20,
+            13,
+            4
+          ],
+          [
+            16,
+            18,
+            34,
+            36,
+            27,
+            6
+          ],
+          [
+            12,
+            24,
+            32,
+            36,
+            28,
+            10
+          ],
+          [
+            6,
+            13,
+            18,
+            16,
+            14,
+            2
+          ]
+        ],
+        "x_min_m": 0.3690642647438249,
+        "x_max_m": 0.6606602352271705,
+        "y_min_m": -0.29468681250501355,
+        "y_max_m": 0.28042368819548724
+      },
+      "first_target": {
+        "samples": 423,
+        "occupied_cells": 24,
+        "total_cells": 24,
+        "cell_count_cv": 0.5635360609943051,
+        "cell_counts": [
+          [
+            8,
+            12,
+            18,
+            20,
+            13,
+            4
+          ],
+          [
+            16,
+            18,
+            34,
+            36,
+            27,
+            6
+          ],
+          [
+            12,
+            24,
+            32,
+            36,
+            28,
+            10
+          ],
+          [
+            6,
+            13,
+            18,
+            16,
+            14,
+            2
+          ]
+        ],
+        "x_min_m": 0.3690642647438249,
+        "x_max_m": 0.6606602352271705,
+        "y_min_m": -0.29468681250501355,
+        "y_max_m": 0.28042368819548724
+      }
+    },
+    "2": {
+      "workspace_bounds": [
+        0.33,
+        0.7,
+        -0.34,
+        0.34
+      ],
+      "workspace_bins": [
+        4,
+        6
+      ],
+      "all_targets": {
+        "samples": 683,
+        "occupied_cells": 24,
+        "total_cells": 24,
+        "cell_count_cv": 0.46539725344796606,
+        "cell_counts": [
+          [
+            17,
+            23,
+            32,
+            25,
+            28,
+            4
+          ],
+          [
+            32,
+            36,
+            55,
+            34,
+            35,
+            11
+          ],
+          [
+            30,
+            34,
+            60,
+            42,
+            37,
+            20
+          ],
+          [
+            11,
+            34,
+            27,
+            23,
+            28,
+            5
+          ]
+        ],
+        "x_min_m": 0.369452146190145,
+        "x_max_m": 0.662933821320135,
+        "y_min_m": -0.30151715935136963,
+        "y_max_m": 0.2983257553747804
+      },
+      "first_target": {
+        "samples": 388,
+        "occupied_cells": 24,
+        "total_cells": 24,
+        "cell_count_cv": 0.490205914555412,
+        "cell_counts": [
+          [
+            9,
+            10,
+            18,
+            15,
+            16,
+            2
+          ],
+          [
+            18,
+            25,
+            28,
+            17,
+            18,
+            6
+          ],
+          [
+            24,
+            19,
+            35,
+            22,
+            24,
+            12
+          ],
+          [
+            5,
+            18,
+            18,
+            13,
+            14,
+            2
+          ]
+        ],
+        "x_min_m": 0.369452146190145,
+        "x_max_m": 0.662933821320135,
+        "y_min_m": -0.30049665302325185,
+        "y_max_m": 0.29042053886410535
+      }
+    }
+  },
+  "skipped_episodes": [],
+  "outputs": {
+    "trajectory_distribution": "trajectory_distribution.png",
+    "trajectory_by_blue_cube_count": "trajectory_by_blue_cube_count.png",
+    "scenario_statistics": "scenario_statistics.png",
+    "progress_stage_statistics": "progress_stage_statistics.png",
+    "failure_analysis": "failure_analysis.png",
+    "failure_analysis_json": "failure_analysis.json",
+    "episode_metrics": "episode_metrics.csv",
+    "scenario_success": "scenario_success.csv",
+    "progress_stage_success": "progress_stage_success.csv",
+    "failure_causes": "failure_causes.csv",
+    "solver_recovery_outcomes": "solver_recovery_outcomes.csv",
+    "workspace_coverage_figure": "workspace_coverage.png",
+    "workspace_coverage_csv": "workspace_coverage.csv"
+  }
+}

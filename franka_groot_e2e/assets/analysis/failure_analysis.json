@@ -1,0 +1,137 @@
+{
+  "total_failures": 71,
+  "failure_reason_counts": [
+    {
+      "failure_reason": "solver_recovery_exhausted",
+      "count": 68,
+      "pct_of_failures": 95.77464788732394
+    },
+    {
+      "failure_reason": "state_timeout",
+      "count": 3,
+      "pct_of_failures": 4.225352112676056
+    }
+  ],
+  "failed_state_counts": [
+    {
+      "failed_state": "move_above_slot",
+      "count": 30,
+      "pct_of_failures": 42.25352112676056
+    },
+    {
+      "failed_state": "approach",
+      "count": 24,
+      "pct_of_failures": 33.80281690140845
+    },
+    {
+      "failed_state": "align_yaw",
+      "count": 9,
+      "pct_of_failures": 12.67605633802817
+    },
+    {
+      "failed_state": "retreat",
+      "count": 3,
+      "pct_of_failures": 4.225352112676056
+    },
+    {
+      "failed_state": "place_descend",
+      "count": 2,
+      "pct_of_failures": 2.816901408450704
+    },
+    {
+      "failed_state": "descend",
+      "count": 2,
+      "pct_of_failures": 2.816901408450704
+    },
+    {
+      "failed_state": "recenter_after_yaw",
+      "count": 1,
+      "pct_of_failures": 1.408450704225352
+    }
+  ],
+  "solver_recovery_outcomes": [
+    {
+      "solver_recovery_total_attempts": 0,
+      "episodes": 702,
+      "successful_episodes": 699,
+      "failed_episodes": 3,
+      "success_rate_pct": 99.57264957264957
+    },
+    {
+      "solver_recovery_total_attempts": 1,
+      "episodes": 108,
+      "successful_episodes": 41,
+      "failed_episodes": 67,
+      "success_rate_pct": 37.96296296296296
+    },
+    {
+      "solver_recovery_total_attempts": 2,
+      "episodes": 1,
+      "successful_episodes": 0,
+      "failed_episodes": 1,
+      "success_rate_pct": 0.0
+    }
+  ],
+  "failed_states_by_blue_cube_count": [
+    {
+      "blue_cube_count": 1,
+      "failed_state": "align_yaw",
+      "count": 2
+    },
+    {
+      "blue_cube_count": 1,
+      "failed_state": "approach",
+      "count": 11
+    },
+    {
+      "blue_cube_count": 1,
+      "failed_state": "move_above_slot",
+      "count": 2
+    },
+    {
+      "blue_cube_count": 1,
+      "failed_state": "place_descend",
+      "count": 1
+    },
+    {
+      "blue_cube_count": 1,
+      "failed_state": "retreat",
+      "count": 1
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "align_yaw",
+      "count": 7
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "approach",
+      "count": 13
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "descend",
+      "count": 2
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "move_above_slot",
+      "count": 28
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "place_descend",
+      "count": 1
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "recenter_after_yaw",
+      "count": 1
+    },
+    {
+      "blue_cube_count": 2,
+      "failed_state": "retreat",
+      "count": 2
+    }
+  ]
+}

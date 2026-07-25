@@ -91,6 +91,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dpi", type=int, default=180)
     parser.add_argument(
+        "--max-blue-cubes",
+        type=int,
+        default=None,
+        help="Include only scenarios at or below this blue-cube count.",
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
         help="Fail on a malformed episode instead of warning and skipping it.",
@@ -1047,6 +1053,8 @@ def main() -> None:
         raise ValueError("--max-points-per-episode must be >= 2")
     if args.dpi <= 0:
         raise ValueError("--dpi must be > 0")
+    if args.max_blue_cubes is not None and args.max_blue_cubes < 1:
+        raise ValueError("--max-blue-cubes must be >= 1")
 
     episode_dirs = discover_episode_dirs(input_root)
     if not episode_dirs:
@@ -1067,8 +1075,13 @@ def main() -> None:
                 }
             )
             print(f"[skip] {episode_dir}: {exc}")
+    if args.max_blue_cubes is not None:
+        episodes = [
+            episode for episode in episodes
+            if episode.blue_cube_count <= args.max_blue_cubes
+        ]
     if not episodes:
-        raise ValueError("No valid episodes remain after validation")
+        raise ValueError("No valid episodes remain after validation and cube-count filtering")
 
     output_dir.mkdir(parents=True, exist_ok=True)
     episode_rows = [trajectory_metrics(episode) for episode in episodes]

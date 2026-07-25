@@ -89,10 +89,10 @@ Other:
   -h, --help
 
 Fixed task settings:
-  2-cube partial progress 25%; 3-cube partial progress 30%, with 40% of
-  partial 3-cube episodes starting with two cubes preplaced. Near-cube recovery
+  Maximum two blue cubes; 2-cube partial progress 25%. Near-cube recovery
   waypoint probability is 10%, solver recovery is limited to one retry, model
-  horizon is 40, and Arena executes 16 actions at 15 Hz.
+  horizon is 40, and Arena evaluates 1/2-cube tasks from the fixed default
+  robot pose while executing 16 actions at 15 Hz.
 EOF
 }
 
@@ -320,6 +320,7 @@ if [ ! -f "${STATE_DIR}/generation.done" ]; then
             --height 256 \
             --no_realtime \
             --seed "${GENERATION_SEED}" \
+            --max_blue_cubes 2 \
             --workspace_x_min 0.33 \
             --workspace_x_max 0.70 \
             --workspace_y_min -0.34 \
@@ -337,8 +338,6 @@ if [ ! -f "${STATE_DIR}/generation.done" ]; then
             --recovery_waypoint_radius_range 0.04 0.08 \
             --recovery_waypoint_height_range 0.12 0.18 \
             --partial_progress_2_cube_prob 0.25 \
-            --partial_progress_3_cube_prob 0.30 \
-            --partial_progress_3_cube_two_preplaced_prob 0.40 \
             --partial_progress_start_xy_radius_range 0.0 0.05 \
             --partial_progress_start_clearance_range 0.12 0.20 \
             --solver_recovery_max_attempts 1
@@ -363,6 +362,7 @@ if [ ! -f "${STATE_DIR}/analysis.done" ]; then
         "${SCRIPTS_REPO}/franka_groot_e2e/scripts/01_generate/analyze_franka_trajectories.py" \
         "${RAW_DATASET}" \
         --output-dir "${RAW_DATASET}/trajectory_analysis" \
+        --max-blue-cubes 2 \
         --strict
     "${ISAAC_PYTHON}" - "${RAW_DATASET}/trajectory_analysis/scenario_summary.json" <<'PY'
 import json, sys
@@ -370,7 +370,7 @@ from pathlib import Path
 summary = json.loads(Path(sys.argv[1]).read_text())
 rows = summary["progress_stage_statistics"]
 seen = {(row["blue_cube_count"], row["num_preplaced"]) for row in rows}
-required = {(1, 0), (2, 0), (2, 1), (3, 0), (3, 1), (3, 2)}
+required = {(1, 0), (2, 0), (2, 1)}
 assert required <= seen, (required - seen, rows)
 print(json.dumps(rows, indent=2))
 PY
@@ -448,7 +448,7 @@ DEBUG_VIS_EPISODES="$("${GROOT_PYTHON}" - "${LEROBOT_DATASET}/meta/episodes.json
 import json, sys
 from pathlib import Path
 records = [json.loads(line) for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]
-preferences = [(2, 1), (2, 1), (3, 1), (3, 2)]
+preferences = [(2, 0), (2, 1), (2, 0), (2, 1)]
 selected = []
 used = set()
 for key in preferences:
@@ -554,6 +554,8 @@ if [ ! -f "${STATE_DIR}/arena_eval.done" ]; then
         --checkpoint "${CHECKPOINT}" \
         --num-gpus 8 \
         --episodes-per-task 100 \
+        --task franka_blue_tray_1_cube \
+        --task franka_blue_tray_2_cubes \
         --base-port 5955 \
         --arena-repo "${ARENA_REPO}" \
         --gr00t-repo "${GROOT_REPO}" \
@@ -566,7 +568,7 @@ if [ ! -f "${STATE_DIR}/arena_eval.done" ]; then
 import json, sys
 from pathlib import Path
 summary = json.loads(Path(sys.argv[1]).read_text())
-assert len(summary) == 3, summary
+assert set(summary) == {"franka_blue_tray_1_cube", "franka_blue_tray_2_cubes"}, summary
 for task, result in summary.items():
     assert result["episodes"] == 100, (task, result)
 print(json.dumps(summary, indent=2))

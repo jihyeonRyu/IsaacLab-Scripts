@@ -1,0 +1,240 @@
+{
+  "episode": 2,
+  "external@t0/action_blue_area_fraction": 0.004891939252336448,
+  "external@t0/action_blue_attention_lift": 4.7055448181963735,
+  "external@t0/action_blue_attention_mass": 0.023019239399763216,
+  "external@t0/action_blue_pointing_accuracy": 0.0,
+  "external@t0/action_blue_red_selectivity": 0.6489810665918758,
+  "external@t0/action_red_area_fraction": 0.006668613707165109,
+  "external@t0/action_red_attention_mass": 0.012450577186179349,
+  "external@t0/blue_pixel_fraction": 0.004891939252336448,
+  "external@t0/reasoner_blue_area_fraction": 0.004891939252336448,
+  "external@t0/reasoner_blue_attention_lift": 5.97843812816473,
+  "external@t0/reasoner_blue_attention_mass": 0.029246156146833884,
+  "external@t0/reasoner_blue_pointing_accuracy": 0.0,
+  "external@t0/reasoner_blue_red_selectivity": 0.5523263525272875,
+  "external@t0/reasoner_red_area_fraction": 0.006668613707165109,
+  "external@t0/reasoner_red_attention_mass": 0.02370470526510461,
+  "external@t0/red_pixel_fraction": 0.006668613707165109,
+  "full_reasoner_generated_text": "The robot should pick up the blue cube and place it in the green tray.",
+  "full_reasoner_model": "/workspace/models/Cosmos-Reason2-2B",
+  "instruction": "Pick up every blue cube and place it in the green tray. Ignore the red cubes.",
+  "logit_lens": [
+    {
+      "decoded": "rank",
+      "layer_index": 12,
+      "layer_number": 13,
+      "log_probability": -4.295168876647949,
+      "rank": 1,
+      "token": "rank",
+      "token_id": 13129
+    },
+    {
+      "decoded": "flush",
+      "layer_index": 12,
+      "layer_number": 13,
+      "log_probability": -4.326418876647949,
+      "rank": 2,
+      "token": "flush",
+      "token_id": 21664
+    },
+    {
+      "decoded": "rim",
+      "layer_index": 12,
+      "layer_number": 13,
+      "log_probability": -4.576418876647949,
+      "rank": 3,
+      "token": "rim",
+      "token_id": 6283
+    },
+    {
+      "decoded": "list",
+      "layer_index": 12,
+      "layer_number": 13,
+      "log_probability": -4.638918876647949,
+      "rank": 4,
+      "token": "list",
+      "token_id": 1607
+    },
+    {
+      "decoded": "Assistant",
+      "layer_index": 12,
+      "layer_number": 13,
+      "log_probability": -4.732668876647949,
+      "rank": 5,
+      "token": "Assistant",
+      "token_id": 71703
+    },
+    {
+      "decoded": "list",
+      "layer_index": 13,
+      "layer_number": 14,
+      "log_probability": -3.95696759223938,
+      "rank": 1,
+      "token": "list",
+      "token_id": 1607
+    },
+    {
+      "decoded": "nod",
+      "layer_index": 13,
+      "layer_number": 14,
+      "log_probability": -4.144467353820801,
+      "rank": 2,
+      "token": "nod",
+      "token_id": 34566
+    },
+    {
+      "decoded": "\u3164",
+      "layer_index": 13,
+      "layer_number": 14,
+      "log_probability": -4.550717353820801,
+      "rank": 3,
+      "token": "\u00e3\u0127\u00a4",
+      "token_id": 144965
+    },
+    {
+      "decoded": "\u1ee7a",
+      "layer_index": 13,
+      "layer_number": 14,
+      "log_probability": -4.644467353820801,
+      "rank": 4,
+      "token": "\u00e1\u00bb\u00a7a",
+      "token_id": 58996
+    },
+    {
+      "decoded": "Assistant",
+      "layer_index": 13,
+      "layer_number": 14,
+      "log_probability": -4.706967353820801,
+      "rank": 5,
+      "token": "Assistant",
+      "token_id": 71703
+    },
+    {
+      "decoded": "list",
+      "layer_index": 14,
+      "layer_number": 15,
+      "log_probability": -3.6411380767822266,
+      "rank": 1,
+      "token": "list",
+      "token_id": 1607
+    },
+    {
+      "decoded": "Assistant",
+      "layer_index": 14,
+      "layer_number": 15,
+      "log_probability": -4.172388076782227,
+      "rank": 2,
+      "token": "Assistant",
+      "token_id": 71703
+    },
+    {
+      "decoded": "using",
+      "layer_index": 14,
+      "layer_number": 15,
+      "log_probability": -4.203638076782227,
+      "rank": 3,
+      "token": "using",
+      "token_id": 970
+    },
+    {
+      "decoded": "nod",
+      "layer_index": 14,
+      "layer_number": 15,
+      "log_probability": -4.516138076782227,
+      "rank": 4,
+      "token": "nod",
+      "token_id": 34566
+    },
+    {
+      "decoded": "outer",
+      "layer_index": 14,
+      "layer_number": 15,
+      "log_probability": -4.641138076782227,
+      "rank": 5,
+      "token": "outer",
+      "token_id": 2676
+    },
+    {
+      "decoded": "\u200b\n\n",
+      "layer_index": 15,
+      "layer_number": 16,
+      "log_probability": -2.611879348754883,
+      "rank": 1,
+      "token": "\u00e2\u0122\u012d\u010a\u010a",
+      "token_id": 33621
+    },
+    {
+      "decoded": "#\n\n",
+      "layer_index": 15,
+      "layer_number": 16,
+      "log_probability": -3.424379348754883,
+      "rank": 2,
+      "token": "#\u010a\u010a",
+      "token_id": 26487
+    },
+    {
+      "decoded": "Assistant",
+      "layer_index": 15,
+      "layer_number": 16,
+      "log_probability": -3.986879348754883,
+      "rank": 3,
+      "token": "Assistant",
+      "token_id": 71703
+    },
+    {
+      "decoded": "noop",
+      "layer_index": 15,
+      "layer_number": 16,
+      "log_probability": -4.549379348754883,
+      "rank": 4,
+      "token": "noop",
+      "token_id": 40162
+    },
+    {
+      "decoded": "###",
+      "layer_index": 15,
+      "layer_number": 16,
+      "log_probability": -4.674379348754883,
+      "rank": 5,
+      "token": "###",
+      "token_id": 14374
+    }
+  ],
+  "reasoner_question": "Which object should the robot manipulate and what should it do with it? Answer in one short sentence.",
+  "step": 120,
+  "visual_token_grids": [
+    {
+      "patch_grid_height": 8,
+      "patch_grid_width": 10,
+      "pixel_height": 256,
+      "pixel_width": 321,
+      "view": "external@t0",
+      "visual_token_count": 80
+    },
+    {
+      "patch_grid_height": 8,
+      "patch_grid_width": 10,
+      "pixel_height": 256,
+      "pixel_width": 321,
+      "view": "wrist@t0",
+      "visual_token_count": 80
+    }
+  ],
+  "wrist@t0/action_blue_area_fraction": 0.07794246495327103,
+  "wrist@t0/action_blue_attention_lift": 1.9043758357015879,
+  "wrist@t0/action_blue_attention_mass": 0.14843174683202726,
+  "wrist@t0/action_blue_pointing_accuracy": 0.0,
+  "wrist@t0/action_blue_red_selectivity": 0.5479344138992355,
+  "wrist@t0/action_red_area_fraction": 0.0514383761682243,
+  "wrist@t0/action_red_attention_mass": 0.12246152628026113,
+  "wrist@t0/blue_pixel_fraction": 0.07794246495327103,
+  "wrist@t0/reasoner_blue_area_fraction": 0.07794246495327103,
+  "wrist@t0/reasoner_blue_attention_lift": 4.065964172821306,
+  "wrist@t0/reasoner_blue_attention_mass": 0.31691127004138026,
+  "wrist@t0/reasoner_blue_pointing_accuracy": 1.0,
+  "wrist@t0/reasoner_blue_red_selectivity": 0.8467501329311692,
+  "wrist@t0/reasoner_red_area_fraction": 0.0514383761682243,
+  "wrist@t0/reasoner_red_attention_mass": 0.05735648347445111,
+  "wrist@t0/red_pixel_fraction": 0.0514383761682243
+}

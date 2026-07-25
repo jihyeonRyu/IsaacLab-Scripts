@@ -1,0 +1,34 @@
+{
+  "1-cube-failure-external.mp4": {
+    "episode_length": 4500,
+    "local_episode": 1,
+    "outcome": "failure",
+    "rank": "rank-04",
+    "seed": 10011,
+    "task": "franka_blue_tray_1_cube"
+  },
+  "1-cube-success-external.mp4": {
+    "episode_length": 898,
+    "local_episode": 12,
+    "outcome": "success",
+    "rank": "rank-02",
+    "seed": 10009,
+    "task": "franka_blue_tray_1_cube"
+  },
+  "2-cubes-failure-external.mp4": {
+    "episode_length": 4500,
+    "local_episode": 2,
+    "outcome": "failure",
+    "rank": "rank-03",
+    "seed": 20010,
+    "task": "franka_blue_tray_2_cubes"
+  },
+  "2-cubes-success-external.mp4": {
+    "episode_length": 2322,
+    "local_episode": 10,
+    "outcome": "success",
+    "rank": "rank-01",
+    "seed": 20008,
+    "task": "franka_blue_tray_2_cubes"
+  }
+}
