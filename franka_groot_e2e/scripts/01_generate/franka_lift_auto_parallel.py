@@ -25,7 +25,7 @@ from __future__ import annotations
 import argparse
 import importlib
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 import json
 import math
 import os
@@ -362,6 +362,40 @@ def add_args() -> argparse.ArgumentParser:
         default=(0.12, 0.18),
         metavar=("MIN", "MAX"),
         help="Recovery waypoint height above the target cube center in meters.",
+    )
+    parser.add_argument(
+        "--partial_progress_2_cube_prob",
+        type=float,
+        default=0.25,
+        help="Probability that a 2-cube episode starts with one blue cube already placed.",
+    )
+    parser.add_argument(
+        "--partial_progress_3_cube_prob",
+        type=float,
+        default=0.30,
+        help="Probability that a 3-cube episode starts with one or two blue cubes already placed.",
+    )
+    parser.add_argument(
+        "--partial_progress_3_cube_two_preplaced_prob",
+        type=float,
+        default=0.40,
+        help="Conditional probability of preplacing two cubes in a partial 3-cube episode.",
+    )
+    parser.add_argument(
+        "--partial_progress_start_xy_radius_range",
+        type=float,
+        nargs=2,
+        default=(0.0, 0.05),
+        metavar=("MIN", "MAX"),
+        help="EEF XY offset radius around the most recently preplaced tray slot.",
+    )
+    parser.add_argument(
+        "--partial_progress_start_clearance_range",
+        type=float,
+        nargs=2,
+        default=(0.12, 0.20),
+        metavar=("MIN", "MAX"),
+        help="EEF clearance above the most recently preplaced cube top.",
     )
     parser.add_argument(
         "--solver_recovery_max_attempts",
@@ -734,6 +768,32 @@ if recovery_radius_min <= 0.0 or recovery_radius_max < recovery_radius_min:
 recovery_height_min, recovery_height_max = map(float, args_cli.recovery_waypoint_height_range)
 if recovery_height_min < float(args_cli.auto_pick_approach_height) or recovery_height_max < recovery_height_min:
     parser.error("recovery waypoint heights must satisfy approach_height <= MIN <= MAX.")
+for probability_name in (
+    "partial_progress_2_cube_prob",
+    "partial_progress_3_cube_prob",
+    "partial_progress_3_cube_two_preplaced_prob",
+):
+    probability = float(getattr(args_cli, probability_name))
+    if not 0.0 <= probability <= 1.0:
+        parser.error(f"--{probability_name} must be in [0, 1].")
+partial_xy_min, partial_xy_max = map(
+    float, args_cli.partial_progress_start_xy_radius_range
+)
+if partial_xy_min < 0.0 or partial_xy_max < partial_xy_min:
+    parser.error(
+        "--partial_progress_start_xy_radius_range must satisfy 0 <= MIN <= MAX."
+    )
+partial_clearance_min, partial_clearance_max = map(
+    float, args_cli.partial_progress_start_clearance_range
+)
+if (
+    partial_clearance_min < float(args_cli.auto_pick_approach_height)
+    or partial_clearance_max < partial_clearance_min
+):
+    parser.error(
+        "--partial_progress_start_clearance_range must satisfy "
+        "approach_height <= MIN <= MAX."
+    )
 if args_cli.solver_recovery_max_attempts < 0:
     parser.error("--solver_recovery_max_attempts must be >= 0.")
 if args_cli.solver_recovery_stall_steps < 1:
@@ -1039,6 +1099,8 @@ class ScenarioObjectSpec:
     restitution: float = 0.0
     recovery_waypoint: Vec3 | None = None
     position_stratum: int | None = None
+    preplaced: bool = False
+    initial_placement_slot: int | None = None
 
 
 @dataclass
@@ -1070,6 +1132,13 @@ class ScenarioSpec:
     camera_eye: Vec3
     camera_target: Vec3
     background_color: Color
+    progress_stage: int = 0
+    num_blue_total: int = 0
+    num_preplaced: int = 0
+    num_remaining: int = 0
+    preplaced_blue_cube_names: list[str] = field(default_factory=list)
+    remaining_blue_cube_names: list[str] = field(default_factory=list)
+    start_pose_mode: str = "random_workspace"
     start_ee_target: Vec3 | None = None
     start_ee_actual: Vec3 | None = None
     start_ee_tilt_deg: float | None = None
@@ -1151,6 +1220,90 @@ def sample_recovery_waypoint(
             continue
         height = float(rng.uniform(*args_cli.recovery_waypoint_height_range))
         return (round(xy[0], 6), round(xy[1], 6), round(cube.pos[2] + height, 6))
+
+
+def sample_partial_progress_count(
+    rng: np.random.Generator, blue_cube_count: int
+) -> int:
+    """Sample how many blue cubes are already complete at episode start."""
+    if blue_cube_count == 2:
+        return int(rng.random() < float(args_cli.partial_progress_2_cube_prob))
+    if blue_cube_count == 3 and rng.random() < float(
+        args_cli.partial_progress_3_cube_prob
+    ):
+        return 2 if rng.random() < float(
+            args_cli.partial_progress_3_cube_two_preplaced_prob
+        ) else 1
+    return 0
+
+
+def preplace_blue_cubes(
+    rng: np.random.Generator,
+    blue_cubes: list[ScenarioObjectSpec],
+    placement_positions: list[Vec3],
+    tray_pos: Vec3,
+    tray_size: Vec3,
+    num_preplaced: int,
+) -> list[ScenarioObjectSpec]:
+    """Place a deterministic random subset into the first completed tray slots."""
+    if not 0 <= num_preplaced < len(blue_cubes):
+        raise RuntimeError(
+            f"invalid partial-progress count {num_preplaced} for {len(blue_cubes)} cubes"
+        )
+    if num_preplaced == 0:
+        return []
+    selected_indices = [
+        int(index)
+        for index in rng.choice(len(blue_cubes), size=num_preplaced, replace=False)
+    ]
+    tray_top = float(tray_pos[2]) + 0.5 * float(tray_size[2])
+    preplaced: list[ScenarioObjectSpec] = []
+    for slot_index, cube_index in enumerate(selected_indices):
+        cube = blue_cubes[cube_index]
+        slot = placement_positions[slot_index]
+        cube.pos = (
+            float(slot[0]),
+            float(slot[1]),
+            tray_top + 0.5 * float(cube.size[2]) + 0.003,
+        )
+        cube.preplaced = True
+        cube.initial_placement_slot = slot_index
+        cube.position_stratum = None
+        cube.recovery_waypoint = None
+        preplaced.append(cube)
+    return preplaced
+
+
+def sample_partial_progress_start_ee_target(
+    rng: np.random.Generator, last_preplaced_cube: ScenarioObjectSpec
+) -> Vec3 | None:
+    """Sample a safe post-release retreat pose above the last completed cube."""
+    if not args_cli.randomize_start_pose:
+        return None
+    margin = 0.01
+    cube_top = float(last_preplaced_cube.pos[2]) + 0.5 * float(
+        last_preplaced_cube.size[2]
+    )
+    for _ in range(256):
+        angle = float(rng.uniform(-math.pi, math.pi))
+        radius = float(rng.uniform(*args_cli.partial_progress_start_xy_radius_range))
+        x = float(last_preplaced_cube.pos[0]) + radius * math.cos(angle)
+        y = float(last_preplaced_cube.pos[1]) + radius * math.sin(angle)
+        if not (
+            float(args_cli.workspace_x_min) + margin
+            <= x
+            <= float(args_cli.workspace_x_max) - margin
+            and float(args_cli.workspace_y_min) + margin
+            <= y
+            <= float(args_cli.workspace_y_max) - margin
+            and within_workspace_reach((x, y))
+        ):
+            continue
+        clearance = float(
+            rng.uniform(*args_cli.partial_progress_start_clearance_range)
+        )
+        return (round(x, 6), round(y, 6), round(cube_top + clearance, 6))
+    raise RuntimeError("failed to sample a reachable partial-progress retreat pose")
 
 
 def sample_cube_physics(rng: np.random.Generator) -> tuple[float, float, float, float]:
@@ -1257,16 +1410,62 @@ def overlaps_2d(
 def validate_scenario_spawn_clearance(
     scenario: ScenarioSpec, margin: float | None = None
 ) -> None:
-    """Reject any initial object footprint that touches the tray footprint."""
+    """Validate tray-clear loose objects and explicitly marked preplaced targets."""
     clearance = 0.0 if margin is None else float(margin)
     tray_half_x = 0.5 * float(scenario.tray_size[0])
     tray_half_y = 0.5 * float(scenario.tray_size[1])
+    tray_top = float(scenario.tray_pos[2]) + 0.5 * float(scenario.tray_size[2])
+    preplaced = sorted(
+        (cube for cube in scenario.blue_cubes if cube.preplaced),
+        key=lambda cube: int(cube.initial_placement_slot or 0),
+    )
+    preplaced_names = [cube.name for cube in preplaced]
+    expected_names = list(scenario.preplaced_blue_cube_names or [])
+    remaining_names = [cube.name for cube in scenario.blue_cubes if not cube.preplaced]
+    expected_remaining = list(scenario.remaining_blue_cube_names or [])
+    placement_slots = [cube.initial_placement_slot for cube in preplaced]
+    if (
+        scenario.progress_stage != len(preplaced)
+        or scenario.num_preplaced != len(preplaced)
+        or scenario.num_blue_total != len(scenario.blue_cubes)
+        or scenario.num_remaining != len(scenario.blue_cubes) - len(preplaced)
+        or preplaced_names != expected_names
+        or remaining_names != expected_remaining
+        or placement_slots != list(range(len(preplaced)))
+        or scenario.num_preplaced >= len(scenario.blue_cubes)
+    ):
+        raise RuntimeError(
+            "invalid partial-progress metadata: "
+            f"episode={scenario.episode_index + 1} stage={scenario.progress_stage} "
+            f"preplaced={preplaced_names} expected={expected_names}"
+        )
     for cube in [*scenario.blue_cubes, *scenario.red_cubes]:
         # A cuboid may have arbitrary yaw. Its half diagonal is a conservative
         # axis-aligned footprint radius for every orientation.
         cube_radius = 0.5 * math.hypot(float(cube.size[0]), float(cube.size[1]))
         dx = abs(float(cube.pos[0]) - float(scenario.tray_pos[0]))
         dy = abs(float(cube.pos[1]) - float(scenario.tray_pos[1]))
+        if cube.preplaced:
+            if cube.role != "target_blue_cube" or cube.initial_placement_slot is None:
+                raise RuntimeError(
+                    f"invalid preplaced object metadata: {cube.name}"
+                )
+            wall_clearance = 0.003
+            minimum_z = tray_top + 0.5 * float(cube.size[2])
+            if (
+                dx + cube_radius + wall_clearance > tray_half_x
+                or dy + cube_radius + wall_clearance > tray_half_y
+                or float(cube.pos[2]) + 1.0e-6 < minimum_z
+            ):
+                raise RuntimeError(
+                    "failed to validate preplaced cube: "
+                    f"episode={scenario.episode_index + 1} object={cube.name} "
+                    f"dx={dx:.4f} dy={dy:.4f} radius={cube_radius:.4f} "
+                    f"z={cube.pos[2]:.4f} tray={scenario.tray_pos}"
+                )
+            continue
+        if cube.initial_placement_slot is not None:
+            raise RuntimeError(f"non-preplaced cube has a slot: {cube.name}")
         if (
             dx < tray_half_x + cube_radius + clearance
             and dy < tray_half_y + cube_radius + clearance
@@ -1697,12 +1896,39 @@ def _generate_blue_tray_scenario_once(
     else:
         background_color = (0.10, 0.12, 0.15)
     lights = generate_episode_lights(rng, light_intensity, light_color, background_color)
+    # Progress-stage sampling depends only on the public episode seed, not on a
+    # rare layout retry, so the standard/partial mix remains reproducible.
+    progress_rng = np.random.default_rng(base_seed ^ 0x3C6EF372)
+    num_preplaced = sample_partial_progress_count(progress_rng, blue_count)
+    tray_pos = (tray_xy[0], tray_xy[1], tray_z)
+    tray_size = (tray_x, tray_y, 0.025)
+    preplaced_cubes = preplace_blue_cubes(
+        progress_rng,
+        blue_cubes,
+        placement_positions,
+        tray_pos,
+        tray_size,
+        num_preplaced,
+    )
+    preplaced_names = [cube.name for cube in preplaced_cubes]
+    remaining_names = [cube.name for cube in blue_cubes if not cube.preplaced]
+
     # Keep motion augmentation independent from layout/appearance RNG so toggling
     # it does not silently change the sampled scene for the same episode seed.
     augmentation_rng = np.random.default_rng(seed ^ 0x5A17A11)
-    start_ee_target = sample_start_ee_target(augmentation_rng)
+    if preplaced_cubes:
+        start_ee_target = sample_partial_progress_start_ee_target(
+            augmentation_rng, preplaced_cubes[-1]
+        )
+        start_pose_mode = (
+            "post_placement_retreat" if start_ee_target is not None else "default"
+        )
+    else:
+        start_ee_target = sample_start_ee_target(augmentation_rng)
+        start_pose_mode = "random_workspace" if start_ee_target is not None else "default"
     for cube in blue_cubes:
-        cube.recovery_waypoint = sample_recovery_waypoint(augmentation_rng, cube)
+        if not cube.preplaced:
+            cube.recovery_waypoint = sample_recovery_waypoint(augmentation_rng, cube)
 
     return ScenarioSpec(
         episode_index=episode_index,
@@ -1710,8 +1936,8 @@ def _generate_blue_tray_scenario_once(
         mode="blue_tray",
         blue_cubes=blue_cubes,
         red_cubes=red_cubes,
-        tray_pos=(tray_xy[0], tray_xy[1], tray_z),
-        tray_size=(tray_x, tray_y, 0.025),
+        tray_pos=tray_pos,
+        tray_size=tray_size,
         tray_color=tray_color,
         table_color=table_color,
         light_intensity=light_intensity,
@@ -1722,6 +1948,13 @@ def _generate_blue_tray_scenario_once(
         camera_eye=camera_eye,
         camera_target=camera_target,
         background_color=background_color,
+        progress_stage=num_preplaced,
+        num_blue_total=blue_count,
+        num_preplaced=num_preplaced,
+        num_remaining=blue_count - num_preplaced,
+        preplaced_blue_cube_names=preplaced_names,
+        remaining_blue_cube_names=remaining_names,
+        start_pose_mode=start_pose_mode,
         start_ee_target=start_ee_target,
     )
 
@@ -2875,9 +3108,18 @@ class AutoPickPlaceController:
         self.events: list[dict[str, Any]] = []
 
     def status_payload(self) -> dict[str, Any]:
+        num_preplaced = self.scenario.num_preplaced if self.scenario is not None else 0
         return {"active": self.active, "completed": self.completed, "failed": self.failed,
                 "state": self.state, "target": self.label, "slot_index": self.slot_index,
                 "retry_count": self.retry_count, "env_id": self.env_id,
+                "progress_stage": (
+                    self.scenario.progress_stage if self.scenario is not None else 0
+                ),
+                "initial_preplaced_count": num_preplaced,
+                "initial_remaining_count": (
+                    self.scenario.num_remaining if self.scenario is not None else 0
+                ),
+                "newly_placed_count": max(0, len(self.processed) - num_preplaced),
                 "recovery_augmented": self.recovery_waypoint is not None,
                 "recovery_completed": self.recovery_completed,
                 "solver_recovery_attempts": self.solver_recovery_attempts,
@@ -2911,8 +3153,9 @@ class AutoPickPlaceController:
             print("[WARN] full auto pick requires --scenario blue_tray")
             return False
         self.active, self.completed, self.failed = True, False, False
-        self.processed.clear()
-        self.slot_index = self.retry_count = 0
+        self.processed = set(self.scenario.preplaced_blue_cube_names or [])
+        self.slot_index = int(self.scenario.num_preplaced)
+        self.retry_count = 0
         _, reference_quat = read_ee_pose_env(env, self.env_id)
         self.solver_recovery_reference_quat = reference_quat.detach().clone()
         reference_tilt = tool_down_tilt_deg_xyzw(reference_quat)
@@ -2925,6 +3168,10 @@ class AutoPickPlaceController:
         self._event(
             "sequence_started",
             placement_positions=self.scenario.placement_positions,
+            progress_stage=self.scenario.progress_stage,
+            preplaced_blue_cube_names=self.scenario.preplaced_blue_cube_names,
+            remaining_blue_cube_names=self.scenario.remaining_blue_cube_names,
+            start_pose_mode=self.scenario.start_pose_mode,
             start_ee_target=self.scenario.start_ee_target,
             start_ee_actual=self.scenario.start_ee_actual,
             solver_recovery_reference_quat=tensor_to_numpy(reference_quat).tolist(),
@@ -2946,7 +3193,12 @@ class AutoPickPlaceController:
                 candidates.append((cube, pos))
         if not candidates:
             self.active, self.completed, self.state = False, True, "complete"
-            self._event("sequence_completed", placed_count=len(self.processed))
+            self._event(
+                "sequence_completed",
+                placed_count=len(self.processed),
+                initially_preplaced_count=self.scenario.num_preplaced,
+                newly_placed_count=len(self.processed) - self.scenario.num_preplaced,
+            )
             return False
         ee_pos, _ = read_ee_pose_env(env, self.env_id)
         cube, pos = min(candidates, key=lambda item: float(torch.linalg.norm(item[1] - ee_pos).item()))
@@ -3547,9 +3799,17 @@ def make_vector_template_scenario(first_episode: int) -> ScenarioSpec:
         args_cli.min_red_cubes,
         args_cli.max_red_cubes,
     )
+    saved_partial_probs = (
+        args_cli.partial_progress_2_cube_prob,
+        args_cli.partial_progress_3_cube_prob,
+    )
     try:
         args_cli.min_blue_cubes = args_cli.max_blue_cubes
         args_cli.min_red_cubes = args_cli.max_red_cubes
+        # The clone template describes asset capacity, not a training episode.
+        # Keep every template object loose and non-overlapping before PhysX starts.
+        args_cli.partial_progress_2_cube_prob = 0.0
+        args_cli.partial_progress_3_cube_prob = 0.0
         template = generate_blue_tray_scenario(first_episode)
     finally:
         (
@@ -3558,6 +3818,10 @@ def make_vector_template_scenario(first_episode: int) -> ScenarioSpec:
             args_cli.min_red_cubes,
             args_cli.max_red_cubes,
         ) = saved_counts
+        (
+            args_cli.partial_progress_2_cube_prob,
+            args_cli.partial_progress_3_cube_prob,
+        ) = saved_partial_probs
 
     # A common base mesh is required for scene cloning. Isaac Lab's USD event
     # scales each clone independently before PhysX starts.
@@ -3658,6 +3922,13 @@ def adapt_vector_scenario(
     template_objects = {
         cube.asset_name: cube for cube in [*template.blue_cubes, *template.red_cubes]
     }
+    partial_start_clearance: float | None = None
+    if scenario.preplaced_blue_cube_names and scenario.start_ee_target is not None:
+        last_name = scenario.preplaced_blue_cube_names[-1]
+        reference = next(cube for cube in scenario.blue_cubes if cube.name == last_name)
+        partial_start_clearance = float(scenario.start_ee_target[2]) - (
+            float(reference.pos[2]) + 0.5 * float(reference.size[2])
+        )
     for cube in [*scenario.blue_cubes, *scenario.red_cubes]:
         physical = template_objects[cube.asset_name]
         cube.size = asset_sizes[cube.asset_name]
@@ -3665,9 +3936,30 @@ def adapt_vector_scenario(
         cube.static_friction = physical.static_friction
         cube.dynamic_friction = physical.dynamic_friction
         cube.restitution = physical.restitution
-        cube.pos = (cube.pos[0], cube.pos[1], cuboid_center_z(cube.size[2]))
+        if cube.preplaced:
+            cube.pos = (
+                cube.pos[0],
+                cube.pos[1],
+                float(scenario.tray_pos[2])
+                + 0.5 * float(scenario.tray_size[2])
+                + 0.5 * float(cube.size[2])
+                + 0.003,
+            )
+        else:
+            cube.pos = (cube.pos[0], cube.pos[1], cuboid_center_z(cube.size[2]))
         cube.prim_path = cube.prim_path.replace(
             "/World/envs/env_0", f"/World/envs/env_{env_id}"
+        )
+
+    if partial_start_clearance is not None and scenario.start_ee_target is not None:
+        last_name = (scenario.preplaced_blue_cube_names or [""])[-1]
+        reference = next(cube for cube in scenario.blue_cubes if cube.name == last_name)
+        scenario.start_ee_target = (
+            float(scenario.start_ee_target[0]),
+            float(scenario.start_ee_target[1]),
+            float(reference.pos[2])
+            + 0.5 * float(reference.size[2])
+            + partial_start_clearance,
         )
 
     if fixed_tray_pos is not None:
@@ -4123,6 +4415,7 @@ def run_layout_validation_only() -> None:
     ]
     fixed_trays = [scenario.tray_pos for scenario in initial]
     blue_counts: dict[int, int] = {}
+    progress_stage_counts: dict[str, int] = {}
     blue_positions: dict[int, list[tuple[float, float]]] = {}
     first_blue_positions: dict[int, list[tuple[float, float]]] = {}
     blue_strata: dict[int, list[int]] = {}
@@ -4134,19 +4427,24 @@ def run_layout_validation_only() -> None:
         validate_scenario_spawn_clearance(scenario, margin=float(args_cli.min_spawn_spacing))
         blue_count = len(scenario.blue_cubes)
         blue_counts[blue_count] = blue_counts.get(blue_count, 0) + 1
+        stage_key = f"{blue_count}_cube_{scenario.num_preplaced}_preplaced"
+        progress_stage_counts[stage_key] = progress_stage_counts.get(stage_key, 0) + 1
+        loose_cubes = [cube for cube in scenario.blue_cubes if not cube.preplaced]
+        if not loose_cubes:
+            raise RuntimeError(f"partial-progress scenario has no remaining target: {stage_key}")
         blue_positions.setdefault(blue_count, []).extend(
-            (float(cube.pos[0]), float(cube.pos[1])) for cube in scenario.blue_cubes
+            (float(cube.pos[0]), float(cube.pos[1])) for cube in loose_cubes
         )
         first_blue_positions.setdefault(blue_count, []).append(
-            (float(scenario.blue_cubes[0].pos[0]), float(scenario.blue_cubes[0].pos[1]))
+            (float(loose_cubes[0].pos[0]), float(loose_cubes[0].pos[1]))
         )
         blue_strata.setdefault(blue_count, []).extend(
-            int(cube.position_stratum) for cube in scenario.blue_cubes
+            int(cube.position_stratum) for cube in loose_cubes
             if cube.position_stratum is not None
         )
-        if scenario.blue_cubes[0].position_stratum is not None:
+        if loose_cubes[0].position_stratum is not None:
             first_blue_strata.setdefault(blue_count, []).append(
-                int(scenario.blue_cubes[0].position_stratum)
+                int(loose_cubes[0].position_stratum)
             )
 
     x_bins, y_bins = (int(value) for value in args_cli.target_workspace_bins)
@@ -4197,6 +4495,7 @@ def run_layout_validation_only() -> None:
                 "vector_env_slots": env_count,
                 "fixed_tray_positions": fixed_trays,
                 "blue_cube_counts": blue_counts,
+                "progress_stage_counts": progress_stage_counts,
                 "target_workspace_bins": [x_bins, y_bins],
                 "blue_target_coverage": coverage,
                 "tray_overlap_count": 0,

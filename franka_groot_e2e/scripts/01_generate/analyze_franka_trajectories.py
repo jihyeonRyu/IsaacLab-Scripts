@@ -42,6 +42,11 @@ class EpisodeTrajectory:
     failed: bool
     scenario_mode: str
     seed: int | None
+    progress_stage: int
+    num_blue_total: int
+    num_preplaced: int
+    num_remaining: int
+    preplaced_blue_cube_names: list[str]
     recovery_planned: bool
     recovery_augmented: bool
     recovery_completed: bool
@@ -54,6 +59,7 @@ class EpisodeTrajectory:
     sim_times: np.ndarray
     blue_cube_positions: np.ndarray
     blue_cube_strata: list[int | None]
+    blue_cube_preplaced: list[bool]
     tray_position: np.ndarray
     workspace_bounds: tuple[float, float, float, float]
     target_workspace_bins: tuple[int, int]
@@ -211,6 +217,54 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
     if not isinstance(bins_value, (list, tuple)) or len(bins_value) != 2:
         bins_value = (4, 6)
     target_workspace_bins = (int(bins_value[0]), int(bins_value[1]))
+    blue_cube_preplaced = [bool(cube.get("preplaced", False)) for cube in blue_cubes]
+    inferred_preplaced_cubes = sorted(
+        (
+            (int(cube.get("initial_placement_slot", -1)), index, cube)
+            for index, cube in enumerate(blue_cubes)
+            if blue_cube_preplaced[index]
+        ),
+        key=lambda entry: (entry[0], entry[1]),
+    )
+    inferred_preplaced_slots = [slot for slot, _, _ in inferred_preplaced_cubes]
+    inferred_preplaced_names = [
+        str(cube.get("name", f"blue_cube_{index}"))
+        for _, index, cube in inferred_preplaced_cubes
+    ]
+    inferred_remaining_names = [
+        str(cube.get("name", f"blue_cube_{index}"))
+        for index, cube in enumerate(blue_cubes)
+        if not blue_cube_preplaced[index]
+    ]
+    preplaced_blue_cube_names = [
+        str(name)
+        for name in scenario.get(
+            "preplaced_blue_cube_names", inferred_preplaced_names
+        ) or []
+    ]
+    remaining_blue_cube_names = [
+        str(name)
+        for name in scenario.get(
+            "remaining_blue_cube_names", inferred_remaining_names
+        ) or []
+    ]
+    num_preplaced = int(scenario.get("num_preplaced", len(inferred_preplaced_names)))
+    num_blue_total = int(scenario.get("num_blue_total", len(blue_cubes)))
+    num_remaining = int(scenario.get("num_remaining", num_blue_total - num_preplaced))
+    progress_stage = int(scenario.get("progress_stage", num_preplaced))
+    if (
+        num_blue_total != len(blue_cubes)
+        or num_preplaced != len(inferred_preplaced_names)
+        or num_remaining != len(blue_cubes) - num_preplaced
+        or progress_stage != num_preplaced
+        or inferred_preplaced_slots != list(range(num_preplaced))
+        or preplaced_blue_cube_names != inferred_preplaced_names
+        or remaining_blue_cube_names != inferred_remaining_names
+        or num_remaining < 1
+    ):
+        raise ValueError(
+            f"Invalid partial-progress metadata in {logs_dir / 'scenario.json'}"
+        )
     completed = bool(result.get("completed"))
     failed = bool(result.get("failed"))
     failure_reason, failed_state, total_solver_attempts = load_automation_details(
@@ -226,6 +280,11 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
         failed=failed,
         scenario_mode=str(scenario.get("mode", "unknown")),
         seed=int(scenario["seed"]) if scenario.get("seed") is not None else None,
+        progress_stage=progress_stage,
+        num_blue_total=num_blue_total,
+        num_preplaced=num_preplaced,
+        num_remaining=num_remaining,
+        preplaced_blue_cube_names=preplaced_blue_cube_names,
         recovery_planned=any(cube.get("recovery_waypoint") is not None for cube in blue_cubes),
         recovery_augmented=bool(result.get("recovery_augmented")),
         recovery_completed=bool(result.get("recovery_completed")),
@@ -243,6 +302,7 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
             else None
             for cube in blue_cubes
         ],
+        blue_cube_preplaced=blue_cube_preplaced,
         tray_position=tray_position,
         workspace_bounds=workspace_bounds,
         target_workspace_bins=target_workspace_bins,
@@ -271,6 +331,11 @@ def trajectory_metrics(episode: EpisodeTrajectory) -> dict[str, Any]:
         "failed": episode.failed,
         "scenario_mode": episode.scenario_mode,
         "seed": episode.seed,
+        "progress_stage": episode.progress_stage,
+        "num_blue_total": episode.num_blue_total,
+        "num_preplaced": episode.num_preplaced,
+        "num_remaining": episode.num_remaining,
+        "preplaced_blue_cube_names": ";".join(episode.preplaced_blue_cube_names),
         "recovery_planned": episode.recovery_planned,
         "recovery_augmented": episode.recovery_augmented,
         "recovery_completed": episode.recovery_completed,
@@ -349,6 +414,49 @@ def aggregate_metrics(
     return scenario_rows
 
 
+def aggregate_progress_metrics(
+    episodes: list[EpisodeTrajectory],
+    episode_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Aggregate outcomes by total cube count and initial completed progress."""
+    rows_by_episode = {row["episode_id"]: row for row in episode_rows}
+    grouped: dict[tuple[int, int], list[EpisodeTrajectory]] = {}
+    for episode in episodes:
+        grouped.setdefault(
+            (episode.blue_cube_count, episode.num_preplaced), []
+        ).append(episode)
+
+    progress_rows: list[dict[str, Any]] = []
+    for (blue_cube_count, num_preplaced), group in sorted(grouped.items()):
+        group_rows = [rows_by_episode[episode.episode_id] for episode in group]
+        successful = sum(episode.successful for episode in group)
+        progress_rows.append(
+            {
+                "blue_cube_count": blue_cube_count,
+                "progress_stage": num_preplaced,
+                "num_preplaced": num_preplaced,
+                "num_remaining": blue_cube_count - num_preplaced,
+                "episodes": len(group),
+                "successful_episodes": successful,
+                "failed_episodes": len(group) - successful,
+                "success_rate_pct": 100.0 * successful / len(group),
+                "trajectory_points": int(
+                    sum(len(episode.positions) for episode in group)
+                ),
+                "mean_frames": float(
+                    np.mean([row["frames"] for row in group_rows])
+                ),
+                "mean_duration_s": float(
+                    np.mean([row["duration_s"] for row in group_rows])
+                ),
+                "mean_path_length_m": float(
+                    np.mean([row["path_length_m"] for row in group_rows])
+                ),
+            }
+        )
+    return progress_rows
+
+
 def aggregate_failure_analysis(
     episodes: list[EpisodeTrajectory],
 ) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
@@ -378,6 +486,9 @@ def aggregate_failure_analysis(
         {
             "episode_id": episode.episode_id,
             "blue_cube_count": episode.blue_cube_count,
+            "progress_stage": episode.progress_stage,
+            "num_preplaced": episode.num_preplaced,
+            "num_remaining": episode.num_remaining,
             "failure_reason": episode.failure_reason or "unknown",
             "failed_state": episode.failed_state or "unknown",
             "solver_recovery_attempts": episode.solver_recovery_attempts,
@@ -573,19 +684,37 @@ def plot_by_scenario(
     plt.close(figure)
 
 
+def remaining_blue_target_positions(episode: EpisodeTrajectory) -> np.ndarray:
+    """Return only blue targets that were loose and actionable at episode start."""
+    mask = np.logical_not(np.asarray(episode.blue_cube_preplaced, dtype=np.bool_))
+    positions = episode.blue_cube_positions[mask]
+    if len(positions) != episode.num_remaining or len(positions) < 1:
+        raise ValueError(f"Invalid remaining-target mask for {episode.episode_id}")
+    return positions
+
+
 def workspace_coverage_rows(
     episodes: list[EpisodeTrajectory],
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return per-target spawn rows and grid-occupancy statistics by scenario."""
     rows: list[dict[str, Any]] = []
     for episode in episodes:
-        for target_index, (position, stratum) in enumerate(
-            zip(episode.blue_cube_positions, episode.blue_cube_strata, strict=True)
+        for target_index, (position, stratum, preplaced) in enumerate(
+            zip(
+                episode.blue_cube_positions,
+                episode.blue_cube_strata,
+                episode.blue_cube_preplaced,
+                strict=True,
+            )
         ):
+            if preplaced:
+                continue
             rows.append(
                 {
                     "episode_id": episode.episode_id,
                     "blue_cube_count": episode.blue_cube_count,
+                    "progress_stage": episode.progress_stage,
+                    "num_remaining": episode.num_remaining,
                     "target_index": target_index,
                     "successful": episode.successful,
                     "x_m": float(position[0]),
@@ -600,8 +729,13 @@ def workspace_coverage_rows(
     summary: dict[str, Any] = {}
     for blue_count in sorted({episode.blue_cube_count for episode in episodes}):
         group = [episode for episode in episodes if episode.blue_cube_count == blue_count]
-        points = np.concatenate([episode.blue_cube_positions[:, :2] for episode in group], axis=0)
-        first_points = np.asarray([episode.blue_cube_positions[0, :2] for episode in group])
+        points = np.concatenate(
+            [remaining_blue_target_positions(episode)[:, :2] for episode in group],
+            axis=0,
+        )
+        first_points = np.asarray(
+            [remaining_blue_target_positions(episode)[0, :2] for episode in group]
+        )
         x_min = min(episode.workspace_bounds[0] for episode in group)
         x_max = max(episode.workspace_bounds[1] for episode in group)
         y_min = min(episode.workspace_bounds[2] for episode in group)
@@ -652,8 +786,13 @@ def plot_workspace_coverage(
     )
     for row_index, blue_count in enumerate(cube_counts):
         group = [episode for episode in episodes if episode.blue_cube_count == blue_count]
-        points = np.concatenate([episode.blue_cube_positions[:, :2] for episode in group], axis=0)
-        first_points = np.asarray([episode.blue_cube_positions[0, :2] for episode in group])
+        points = np.concatenate(
+            [remaining_blue_target_positions(episode)[:, :2] for episode in group],
+            axis=0,
+        )
+        first_points = np.asarray(
+            [remaining_blue_target_positions(episode)[0, :2] for episode in group]
+        )
         trays = np.asarray([episode.tray_position[:2] for episode in group])
         x_min = min(episode.workspace_bounds[0] for episode in group)
         x_max = max(episode.workspace_bounds[1] for episode in group)
@@ -666,13 +805,13 @@ def plot_workspace_coverage(
         counts, _, _ = np.histogram2d(points[:, 0], points[:, 1], bins=(x_edges, y_edges))
 
         scatter_axis = axes[row_index, 0]
-        scatter_axis.scatter(points[:, 0], points[:, 1], s=10, alpha=0.35, color="#2369bd", label="all blue targets")
-        scatter_axis.scatter(first_points[:, 0], first_points[:, 1], s=13, alpha=0.55, color="#0b2f59", label="first target")
+        scatter_axis.scatter(points[:, 0], points[:, 1], s=10, alpha=0.35, color="#2369bd", label="loose blue targets")
+        scatter_axis.scatter(first_points[:, 0], first_points[:, 1], s=13, alpha=0.55, color="#0b2f59", label="first remaining target")
         scatter_axis.scatter(trays[:, 0], trays[:, 1], s=26, marker="x", color="#2a9d52", label="tray center")
         scatter_axis.set_xlim(x_min, x_max)
         scatter_axis.set_ylim(y_min, y_max)
         configure_axis(scatter_axis, "Spawn X (m)", "Spawn Y (m)")
-        scatter_axis.set_title(f"{blue_count} blue cube(s): initial target positions")
+        scatter_axis.set_title(f"{blue_count} blue cube(s): initial loose-target positions")
         scatter_axis.legend(fontsize=7, loc="best")
 
         heat_axis = axes[row_index, 1]
@@ -734,6 +873,46 @@ def plot_scenario_statistics(
         axis.set_xlabel("Number of blue cubes")
         axis.grid(True, axis="y", alpha=0.25)
     figure.suptitle("Scenario statistics by blue-cube count", fontsize=15)
+    figure.savefig(output_path, dpi=dpi)
+    plt.close(figure)
+
+
+def plot_progress_stage_statistics(
+    progress_rows: list[dict[str, Any]],
+    output_path: Path,
+    dpi: int,
+) -> None:
+    """Plot counts and outcomes for standard versus partial-progress starts."""
+    labels = [
+        f"{row['blue_cube_count']}c/{row['num_preplaced']}p"
+        for row in progress_rows
+    ]
+    x_values = np.arange(len(labels))
+    successes = np.asarray([row["successful_episodes"] for row in progress_rows])
+    failures = np.asarray([row["failed_episodes"] for row in progress_rows])
+    rates = np.asarray([row["success_rate_pct"] for row in progress_rows])
+    lengths = np.asarray([row["mean_path_length_m"] for row in progress_rows])
+    frames = np.asarray([row["mean_frames"] for row in progress_rows])
+
+    figure, axes = plt.subplots(2, 2, figsize=(14, 9), constrained_layout=True)
+    axes[0, 0].bar(x_values, successes, label="success", color="#3a9d5d")
+    axes[0, 0].bar(
+        x_values, failures, bottom=successes, label="failed", color="#d9534f"
+    )
+    axes[0, 0].set_title("Episode counts")
+    axes[0, 0].legend()
+    axes[0, 1].bar(x_values, rates, color="#4278b8")
+    axes[0, 1].set_ylim(0, 105)
+    axes[0, 1].set_title("Success rate (%)")
+    axes[1, 0].bar(x_values, lengths, color="#8c68b8")
+    axes[1, 0].set_title("Mean measured path length (m)")
+    axes[1, 1].bar(x_values, frames, color="#d08b36")
+    axes[1, 1].set_title("Mean recorded frames")
+    for axis in axes.flat:
+        axis.set_xticks(x_values, labels, rotation=35, ha="right")
+        axis.set_xlabel("Total cubes / preplaced cubes")
+        axis.grid(True, axis="y", alpha=0.25)
+    figure.suptitle("Progress-stage statistics", fontsize=15)
     figure.savefig(output_path, dpi=dpi)
     plt.close(figure)
 
@@ -894,10 +1073,12 @@ def main() -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     episode_rows = [trajectory_metrics(episode) for episode in episodes]
     scenario_rows = aggregate_metrics(episodes, episode_rows)
+    progress_rows = aggregate_progress_metrics(episodes, episode_rows)
     failure_analysis, failure_rows, solver_rows = aggregate_failure_analysis(episodes)
     workspace_rows, workspace_coverage = workspace_coverage_rows(episodes)
     write_csv(output_dir / "episode_metrics.csv", episode_rows)
     write_csv(output_dir / "scenario_success.csv", scenario_rows)
+    write_csv(output_dir / "progress_stage_success.csv", progress_rows)
     write_csv(output_dir / "failure_causes.csv", failure_rows)
     write_csv(output_dir / "solver_recovery_outcomes.csv", solver_rows)
     write_csv(output_dir / "workspace_coverage.csv", workspace_rows)
@@ -912,6 +1093,7 @@ def main() -> None:
         "success_rate_pct": 100.0 * total_success / len(episodes),
         "blue_cube_counts": sorted({episode.blue_cube_count for episode in episodes}),
         "scenario_statistics": scenario_rows,
+        "progress_stage_statistics": progress_rows,
         "failure_analysis": failure_analysis,
         "workspace_coverage": workspace_coverage,
         "skipped_episodes": skipped,
@@ -919,10 +1101,12 @@ def main() -> None:
             "trajectory_distribution": "trajectory_distribution.png",
             "trajectory_by_blue_cube_count": "trajectory_by_blue_cube_count.png",
             "scenario_statistics": "scenario_statistics.png",
+            "progress_stage_statistics": "progress_stage_statistics.png",
             "failure_analysis": "failure_analysis.png",
             "failure_analysis_json": "failure_analysis.json",
             "episode_metrics": "episode_metrics.csv",
             "scenario_success": "scenario_success.csv",
+            "progress_stage_success": "progress_stage_success.csv",
             "failure_causes": "failure_causes.csv",
             "solver_recovery_outcomes": "solver_recovery_outcomes.csv",
             "workspace_coverage_figure": "workspace_coverage.png",
@@ -958,6 +1142,11 @@ def main() -> None:
         output_dir / "workspace_coverage.png",
         args.dpi,
     )
+    plot_progress_stage_statistics(
+        progress_rows,
+        output_dir / "progress_stage_statistics.png",
+        args.dpi,
+    )
     plot_failure_analysis(
         failure_analysis,
         output_dir / "failure_analysis.png",
@@ -972,6 +1161,13 @@ def main() -> None:
         print(
             f"  blue_cubes={row['blue_cube_count']}: "
             f"n={row['episodes']}, "
+            f"success={row['successful_episodes']}/{row['episodes']} "
+            f"({row['success_rate_pct']:.1f}%)"
+        )
+    for row in progress_rows:
+        print(
+            f"  progress={row['blue_cube_count']} cubes / "
+            f"{row['num_preplaced']} preplaced: n={row['episodes']}, "
             f"success={row['successful_episodes']}/{row['episodes']} "
             f"({row['success_rate_pct']:.1f}%)"
         )

@@ -276,6 +276,8 @@ if [ ! -f "${RAW_DATASET}/multi_gpu_summary.json" ]; then
         --recovery_waypoint_prob 0.10 \
         --recovery_waypoint_radius_range 0.04 0.08 \
         --recovery_waypoint_height_range 0.12 0.18 \
+        --partial_progress_2_cube_prob 0.0 \
+        --partial_progress_3_cube_prob 0.0 \
         --solver_recovery_max_attempts 1
 fi
 

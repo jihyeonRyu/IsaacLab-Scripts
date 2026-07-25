@@ -432,6 +432,8 @@ python /workspace/IsaacLab-Scripts/franka_groot_e2e/scripts/01_generate/franka_l
   --recovery_waypoint_prob 0.10 \
   --recovery_waypoint_radius_range 0.04 0.08 \
   --recovery_waypoint_height_range 0.12 0.18 \
+  --partial_progress_2_cube_prob 0.0 \
+  --partial_progress_3_cube_prob 0.0 \
   --solver_recovery_max_attempts 1
 ```
 
@@ -461,6 +463,43 @@ Current generation defaults:
 - quaternion restoration follows the shortest arc while holding the neutral EEF position; after 480 control steps it continues with a logged partial recovery when the tool is already inside the validated floor-facing tilt limit, so an unreachable exact quaternion cannot create a new terminal failure;
 - solver recovery allows one retry per cube before marking the episode failed;
 - when domain randomization is enabled, each background RGB channel is sampled independently over the full `[0, 1]` range; task lighting remains near-neutral.
+
+### Partial-progress continuation augmentation
+
+New generation runs include successful continuation states in addition to full
+start-to-finish demonstrations. One-cube episodes always start empty. Two-cube
+episodes preplace one randomly selected target in the first tray slot with 25%
+probability. Three-cube episodes use a 70% full-start, 18% one-preplaced, and
+12% two-preplaced mixture. The two-preplaced share is controlled conditionally
+by `--partial_progress_3_cube_two_preplaced_prob`.
+
+A partial episode starts the EEF in a validated post-placement retreat region:
+0–5 cm in XY from the most recently completed slot and 12–20 cm above that
+cube top. Tool orientation is not randomized. The controller marks preplaced
+targets as already processed, starts at the next free tray slot, and manipulates
+only the remaining loose cubes. Loose targets and distractors still pass the
+strict tray-clear spawn check; the explicitly preplaced targets instead pass an
+inside-tray wall and height check. As before, the converter retains only
+successful trajectories.
+
+Each `scenario.json` records `progress_stage`, `num_preplaced`, `num_remaining`,
+`preplaced_blue_cube_names`, `remaining_blue_cube_names`, and
+`start_pose_mode`. The trajectory analyzer excludes preplaced tray positions
+from loose-target workspace coverage and adds
+`progress_stage_success.csv` plus `progress_stage_statistics.png`.
+
+The completed v5 baseline predates this continuation augmentation, so its
+launcher and the reproduction command above explicitly set both partial-stage
+probabilities to zero. Omit those two overrides to use the new defaults, or set
+custom ratios, for example:
+
+```bash
+--partial_progress_2_cube_prob 0.25 \
+--partial_progress_3_cube_prob 0.30 \
+--partial_progress_3_cube_two_preplaced_prob 0.40 \
+--partial_progress_start_xy_radius_range 0.0 0.05 \
+--partial_progress_start_clearance_range 0.12 0.20
+```
 
 ### v4 no-detour ablation
 
