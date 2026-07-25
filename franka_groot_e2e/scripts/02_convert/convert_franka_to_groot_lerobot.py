@@ -31,6 +31,12 @@ EPISODE_PATTERN = re.compile(r"^episode_(\d+)(?:_run_\d+)?$")
 @dataclass(frozen=True)
 class EpisodeData:
     source_dir: Path
+    blue_cube_count: int
+    progress_stage: int
+    num_preplaced: int
+    num_remaining: int
+    preplaced_blue_cube_names: tuple[str, ...]
+    start_pose_mode: str
     fps: float
     width: int
     height: int
@@ -192,9 +198,32 @@ def load_episode(episode_dir: Path, include_failed: bool) -> EpisodeData | None:
         print(f"[skip] {episode_dir.name}: result.json is not successful")
         return None
 
-    scenario = read_json(logs / "scenario.json")
-    timing = scenario.get("timing", {})
-    args = scenario.get("args", {})
+    scenario_path = logs / "scenario.json"
+    scenario_wrapper = read_json(scenario_path)
+    scenario = scenario_wrapper.get("scenario", {})
+    if not isinstance(scenario, dict):
+        raise ValueError(f"Invalid scenario object in {scenario_path}")
+    blue_cubes = scenario.get("blue_cubes", [])
+    if not isinstance(blue_cubes, list) or not blue_cubes:
+        raise ValueError(f"Missing blue cubes in {scenario_path}")
+    blue_cube_count = len(blue_cubes)
+    num_preplaced = int(scenario.get("num_preplaced", 0))
+    progress_stage = int(scenario.get("progress_stage", num_preplaced))
+    num_remaining = int(
+        scenario.get("num_remaining", blue_cube_count - num_preplaced)
+    )
+    preplaced_blue_cube_names = tuple(
+        str(name) for name in scenario.get("preplaced_blue_cube_names", []) or []
+    )
+    if (
+        progress_stage != num_preplaced
+        or len(preplaced_blue_cube_names) != num_preplaced
+        or num_remaining != blue_cube_count - num_preplaced
+        or num_remaining < 1
+    ):
+        raise ValueError(f"Invalid partial-progress metadata in {scenario_path}")
+    timing = scenario_wrapper.get("timing", {})
+    args = scenario_wrapper.get("args", {})
     fps = float(timing.get("sensor_fps", args.get("fps", 15.0)))
     width = int(args.get("width", 640))
     height = int(args.get("height", 360))
@@ -270,6 +299,12 @@ def load_episode(episode_dir: Path, include_failed: bool) -> EpisodeData | None:
 
     return EpisodeData(
         source_dir=episode_dir,
+        blue_cube_count=blue_cube_count,
+        progress_stage=progress_stage,
+        num_preplaced=num_preplaced,
+        num_remaining=num_remaining,
+        preplaced_blue_cube_names=preplaced_blue_cube_names,
+        start_pose_mode=str(scenario.get("start_pose_mode", "legacy")),
         fps=fps,
         width=width,
         height=height,
@@ -418,6 +453,15 @@ def convert(args: argparse.Namespace) -> None:
                 "episode_index": episode_index,
                 "tasks": [args.task],
                 "length": episode.length,
+                "source_episode": episode.source_dir.name,
+                "blue_cube_count": episode.blue_cube_count,
+                "progress_stage": episode.progress_stage,
+                "num_preplaced": episode.num_preplaced,
+                "num_remaining": episode.num_remaining,
+                "preplaced_blue_cube_names": list(
+                    episode.preplaced_blue_cube_names
+                ),
+                "start_pose_mode": episode.start_pose_mode,
             }
         )
         all_states.append(episode.states)

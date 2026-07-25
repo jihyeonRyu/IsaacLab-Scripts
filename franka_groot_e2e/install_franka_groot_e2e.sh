@@ -398,6 +398,6 @@ cat <<EOF
 Installation complete.
   Load paths: source ${ENV_FILE}
   W&B login : ${GROOT_REPO}/.venv/bin/wandb login
-  Launch v5 : bash ${SCRIPTS_REPO}/franka_groot_e2e/run_v5_waypoint10_recovery1.sh \\
+  Launch    : bash ${SCRIPTS_REPO}/franka_groot_e2e/run_pipeline.sh \\
                 --workspace-root ${WORKSPACE_ROOT}
 EOF
