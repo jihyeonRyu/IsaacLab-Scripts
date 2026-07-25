@@ -230,6 +230,10 @@ if [ ! -x "${FFMPEG_RUNTIME}/bin/ffmpeg" ]; then
 fi
 export PATH="${FFMPEG_RUNTIME}/bin${PATH:+:${PATH}}"
 export LD_LIBRARY_PATH="${FFMPEG_RUNTIME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+LOCAL_ISAAC_LIB="${WORKSPACE_ROOT}/.tools/isaac-system-libs/usr/lib/x86_64-linux-gnu"
+if [ -d "${LOCAL_ISAAC_LIB}" ]; then
+    export LD_LIBRARY_PATH="${LOCAL_ISAAC_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
 if ! "${GROOT_PYTHON}" -c 'from torchcodec.decoders import VideoDecoder' >/dev/null; then
     echo "TorchCodec cannot load the FFmpeg runtime at ${FFMPEG_RUNTIME}." >&2
     exit 2
