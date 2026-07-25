@@ -187,7 +187,7 @@ ARENA_PYTHON="$(normalize_executable_path "${ARENA_PYTHON:-${ISAAC_PYTHON}}")"
 GROOT_PYTHON="$(normalize_executable_path "${GROOT_PYTHON:-${GROOT_REPO}/.venv/bin/python}")"
 RAW_DATASET="$(realpath -m -- "${RAW_DATASET:-${WORKSPACE_ROOT}/output/franka_partial_progress_${GENERATION_EPISODES}eps_seed${GENERATION_SEED}}")"
 LEROBOT_DATASET="$(realpath -m -- "${LEROBOT_DATASET:-${WORKSPACE_ROOT}/datasets/franka_partial_progress_seed${GENERATION_SEED}_lerobot}")"
-EVAL_OUTPUT="$(realpath -m -- "${EVAL_OUTPUT:-${ARENA_REPO}/outputs/franka-gr00t-parallel/partial-progress-1200-ema-8gpu-100eps}")"
+EVAL_OUTPUT="$(realpath -m -- "${EVAL_OUTPUT:-${ARENA_REPO}/outputs/franka-gr00t-parallel/partial-progress-1200-ema-default-start-8gpu-100eps}")"
 STATE_DIR="$(realpath -m -- "${STATE_DIR:-${WORKSPACE_ROOT}/output/franka_e2e_pipeline_final}")"
 RUN_DIR="${GROOT_REPO}/outputs/franka-groot-sft/${EXPERIMENT_NAME}"
 ATTENTION_DIR="${GROOT_REPO}/outputs/attention/${EXPERIMENT_NAME}"
@@ -548,7 +548,7 @@ if [ ! -f "${STATE_DIR}/arena_eval.done" ]; then
         echo "Refusing non-empty Arena output: ${EVAL_OUTPUT}" >&2
         exit 2
     fi
-    status "starting generation-aligned 8-GPU Arena evaluation: 100 episodes/task"
+    status "starting default-start 8-GPU Arena evaluation: 100 episodes/task"
     "${ARENA_REPO}/.venv/bin/python" \
         "${ARENA_REPO}/isaaclab_arena_gr00t/parallel_evaluation.py" \
         --checkpoint "${CHECKPOINT}" \
@@ -560,6 +560,7 @@ if [ ! -f "${STATE_DIR}/arena_eval.done" ]; then
         --cosmos-model-path "${GROOT_COSMOS_MODEL_PATH}" \
         --arena-python "${ARENA_PYTHON}" \
         --gr00t-python "${GROOT_PYTHON}" \
+        --no-randomize-policy-start-pose \
         --output-dir "${EVAL_OUTPUT}"
     "${GROOT_PYTHON}" - "${EVAL_OUTPUT}/summary.json" <<'PY'
 import json, sys
