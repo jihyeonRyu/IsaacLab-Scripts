@@ -18,6 +18,7 @@ franka_groot_e2e/
 ├── install_franka_groot_e2e.sh       # path-aware one-shot installer
 ├── run_pipeline.sh                    # resumable stage supervisor
 ├── run_v5_waypoint10_recovery1.sh     # complete v5 launcher
+├── run_v6_augfix_ema.sh               # reuse v5 data; corrected SFT + EMA + Arena
 ├── scripts/
 │   ├── 01_generate/     # Isaac Lab generation and trajectory analysis
 │   └── 02_convert/      # Isaac output → LeRobot v2.1
@@ -52,6 +53,49 @@ The bundled assets are compact evidence from one internally consistent run:
 3. Convert successful episodes to LeRobot v2.1.
 4. Fine-tune GR00T N1.7 on eight GPUs with W&B online logging.
 5. Run 100 Arena episodes per task on eight GPUs and review the bundled report.
+
+### Audited frame-exhaustive v6 retraining
+
+`run_v6_augfix_ema.sh` reuses the completed v5 LeRobot dataset. It fixes
+processor overrides so `crop_fraction` remains `0.98`, applies state dropout
+only once in the action head, and saves an inference-ready FP32 EMA checkpoint.
+
+Coverage is measured over every valid frame start, not merely over the 517
+episode records. Each episode of length `L` contributes `L - 40 + 1` different
+40-frame action windows. The current dataset audit is:
+
+```text
+episodes                 517
+total frames             309,163
+valid training windows   289,000
+balanced shards          565
+global batch             128
+minimum one-pass steps   2,258
+configured steps         10,000
+complete/nominal passes  4 / 4.429
+```
+
+For Franka, `episode_sampling_rate=0.1` does not discard 90% of frames. The
+loader shuffles every frame index, splits each episode into ten subsequences,
+and greedily balances all subsequences into approximately 512-frame shards.
+With `num_shards_per_epoch=565`, one internal epoch is one non-replacement
+sweep over every valid frame window.
+
+The audited defaults retain action horizon 40 and LR `1e-4` with cosine decay,
+5% warmup, and weight decay `1e-5`. Image augmentation is crop `0.98` plus
+brightness/contrast/saturation/hue `0.25/0.25/0.30/0.03`; action-head state
+dropout is `0.2`, processor state dropout is `0.0`, and EMA decay is `0.999`.
+Arena executes 16 actions before closed-loop re-inference.
+
+To wait for an existing GPU job, then run corrected SFT, four EMA attention
+probes, and 100 Arena episodes for each cube count:
+
+```bash
+nohup bash "${SCRIPTS_REPO}/franka_groot_e2e/run_v6_augfix_ema.sh" \
+  --workspace-root "${WORKSPACE_ROOT}" \
+  --wait-for-pid EXISTING_JOB_PID \
+  > "${WORKSPACE_ROOT}/output/franka_e2e_pipeline_waypoint10_recovery1_v6_augfix_ema.log" 2>&1 &
+```
 
 ### One-command install and launch at a customer-selected path
 
