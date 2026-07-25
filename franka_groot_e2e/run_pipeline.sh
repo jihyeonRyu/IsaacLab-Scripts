@@ -577,7 +577,7 @@ fi
 
 CURRENT_STAGE="cleanup"
 if [ ! -f "${STATE_DIR}/cleanup.done" ]; then
-    status "pruning non-final SFT checkpoints; preserving final EMA only"
+    status "pruning non-final SFT weights; preserving final EMA only"
     "${GROOT_PYTHON}" - "${RUN_DIR}" "${CHECKPOINT}" <<'PY'
 import shutil, sys
 from pathlib import Path
@@ -586,6 +586,10 @@ keep = Path(sys.argv[2]).resolve()
 for path in run_dir.glob("checkpoint-*"):
     if path.resolve() != keep:
         shutil.rmtree(path)
+for pattern in ("model-*.safetensors", "model.safetensors", "model.safetensors.index.json"):
+    for path in run_dir.glob(pattern):
+        if path.is_file():
+            path.unlink()
 PY
     mark_done cleanup
 fi
