@@ -12,6 +12,8 @@ ARENA_REPO="${ARENA_REPO:-}"
 MODELS_ROOT="${MODELS_ROOT:-}"
 ISAAC_VENV="${ISAAC_VENV:-}"
 UV_VENV="${UV_VENV:-}"
+FFMPEG_RUNTIME="${FFMPEG_RUNTIME:-}"
+MICROMAMBA_ROOT="${MICROMAMBA_ROOT:-}"
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
 GROOT_BRANCH="${GROOT_BRANCH:-jryu/franka-demo}"
 ARENA_BRANCH="${ARENA_BRANCH:-jryu/franka-demo}"
@@ -36,6 +38,8 @@ Path options:
   --models-root PATH     Local model/cache parent (default: WORKSPACE_ROOT/models)
   --isaac-venv PATH      Isaac generation venv (default: WORKSPACE_ROOT/env_isaaclab)
   --uv-venv PATH         uv bootstrap venv (default: WORKSPACE_ROOT/.uv-bootstrap)
+  --ffmpeg-runtime PATH  TorchCodec-compatible FFmpeg env (default: WORKSPACE_ROOT/.tools/ffmpeg-7)
+  --micromamba-root PATH Micromamba bootstrap directory (default: WORKSPACE_ROOT/.tools/micromamba)
   --python PATH          Python 3.12 executable (default: /usr/bin/python3)
 
 Repository options:
@@ -107,6 +111,16 @@ while [ "$#" -gt 0 ]; do
             UV_VENV=$2
             shift 2
             ;;
+        --ffmpeg-runtime)
+            need_value "$@"
+            FFMPEG_RUNTIME=$2
+            shift 2
+            ;;
+        --micromamba-root)
+            need_value "$@"
+            MICROMAMBA_ROOT=$2
+            shift 2
+            ;;
         --python)
             need_value "$@"
             PYTHON_BIN=$2
@@ -162,6 +176,9 @@ ARENA_REPO="$(realpath -m -- "${ARENA_REPO:-${WORKSPACE_ROOT}/IsaacLab-Arena}")"
 MODELS_ROOT="$(realpath -m -- "${MODELS_ROOT:-${WORKSPACE_ROOT}/models}")"
 ISAAC_VENV="$(realpath -m -- "${ISAAC_VENV:-${WORKSPACE_ROOT}/env_isaaclab}")"
 UV_VENV="$(realpath -m -- "${UV_VENV:-${WORKSPACE_ROOT}/.uv-bootstrap}")"
+FFMPEG_RUNTIME="$(realpath -m -- "${FFMPEG_RUNTIME:-${WORKSPACE_ROOT}/.tools/ffmpeg-7}")"
+MICROMAMBA_ROOT="$(realpath -m -- "${MICROMAMBA_ROOT:-${WORKSPACE_ROOT}/.tools/micromamba}")"
+MICROMAMBA_BIN="${MICROMAMBA_ROOT}/bin/micromamba"
 PYTHON_BIN="$(normalize_executable_path "${PYTHON_BIN}")"
 BASE_MODEL_PATH="${MODELS_ROOT}/GR00T-N1.7-3B"
 COSMOS_MODEL_PATH="${MODELS_ROOT}/Cosmos-Reason2-2B"
@@ -181,6 +198,8 @@ Resolved Franka GR00T installation
   HF cache       : ${HF_HOME}
   Isaac venv     : ${ISAAC_VENV}
   uv venv        : ${UV_VENV}
+  FFmpeg runtime : ${FFMPEG_RUNTIME}
+  micromamba     : ${MICROMAMBA_BIN}
   Python         : ${PYTHON_BIN}
   env file       : ${ENV_FILE}
 EOF
@@ -221,10 +240,41 @@ install_system_packages() {
     fi
     "${apt_prefix[@]}" apt-get update
     "${apt_prefix[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y \
-        ca-certificates curl git build-essential cmake ninja-build pkg-config ffmpeg \
+        ca-certificates curl git bzip2 build-essential cmake ninja-build pkg-config \
         python3.12-venv python3-pip \
         libice6 libsm6 libxt6t64 libgl1 libegl1 libglib2.0-0 \
         libx11-6 libxrender1 libxext6 libxrandr2 libxi6 libxcursor1 libxinerama1
+}
+
+install_ffmpeg_runtime() {
+    if [ ! -x "${FFMPEG_RUNTIME}/bin/ffmpeg" ]; then
+        if [ ! -x "${MICROMAMBA_BIN}" ]; then
+            if ! command -v curl >/dev/null || ! command -v tar >/dev/null; then
+                echo "curl and tar are required to bootstrap the FFmpeg runtime." >&2
+                exit 2
+            fi
+            mkdir -p -- "${MICROMAMBA_ROOT}"
+            curl -LsSf https://micro.mamba.pm/api/micromamba/linux-64/latest |
+                tar -xj -C "${MICROMAMBA_ROOT}" bin/micromamba
+        fi
+        MAMBA_ROOT_PREFIX="${MICROMAMBA_ROOT}/root" \
+            "${MICROMAMBA_BIN}" create \
+            -p "${FFMPEG_RUNTIME}" \
+            -c conda-forge \
+            "ffmpeg>=4,<8" \
+            -y
+    fi
+
+    local ffmpeg_version
+    local ffmpeg_major
+    ffmpeg_version="$("${FFMPEG_RUNTIME}/bin/ffmpeg" -version | awk 'NR == 1 { print $3 }')"
+    ffmpeg_major="${ffmpeg_version%%.*}"
+    if ! [[ "${ffmpeg_major}" =~ ^[4-7]$ ]]; then
+        echo "TorchCodec 0.8 requires FFmpeg 4-7; found ${ffmpeg_version} in ${FFMPEG_RUNTIME}." >&2
+        exit 2
+    fi
+    export PATH="${FFMPEG_RUNTIME}/bin${PATH:+:${PATH}}"
+    export LD_LIBRARY_PATH="${FFMPEG_RUNTIME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 }
 
 clone_or_validate() {
@@ -257,6 +307,7 @@ if ! command -v git >/dev/null; then
     exit 2
 fi
 mkdir -p -- "${WORKSPACE_ROOT}" "${MODELS_ROOT}" "${HF_HOME}"
+install_ffmpeg_runtime
 
 clone_or_validate \
     https://github.com/jihyeonRyu/IsaacLab-Scripts.git \
@@ -293,6 +344,8 @@ UV_BIN="${UV_VENV}/bin/uv"
     "${UV_BIN}" sync --frozen --python "${PYTHON_BIN}"
 )
 "${UV_BIN}" pip check --python "${GROOT_REPO}/.venv/bin/python"
+"${GROOT_REPO}/.venv/bin/python" -c \
+    'from torchcodec.decoders import VideoDecoder; print("TorchCodec FFmpeg runtime: OK")'
 
 (
     cd "${ARENA_REPO}"
@@ -322,6 +375,9 @@ fi
     printf 'export BASE_MODEL_PATH=%q\n' "${BASE_MODEL_PATH}"
     printf 'export GROOT_COSMOS_MODEL_PATH=%q\n' "${COSMOS_MODEL_PATH}"
     printf 'export HF_HOME=%q\n' "${HF_HOME}"
+    printf 'export FFMPEG_RUNTIME=%q\n' "${FFMPEG_RUNTIME}"
+    printf 'export PATH=%q${PATH:+:${PATH}}\n' "${FFMPEG_RUNTIME}/bin"
+    printf 'export LD_LIBRARY_PATH=%q${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}\n' "${FFMPEG_RUNTIME}/lib"
     printf 'export ISAAC_PYTHON=%q\n' "${ISAAC_VENV}/bin/python"
     printf 'export ARENA_PYTHON=%q\n' "${ISAAC_VENV}/bin/python"
     printf 'export GROOT_PYTHON=%q\n' "${GROOT_REPO}/.venv/bin/python"

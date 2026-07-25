@@ -10,6 +10,7 @@ MODELS_ROOT="${MODELS_ROOT:-${WORKSPACE_ROOT}/models}"
 BASE_MODEL_PATH="${BASE_MODEL_PATH:-${MODELS_ROOT}/GR00T-N1.7-3B}"
 HF_HOME="${HF_HOME:-${MODELS_ROOT}/huggingface-cache}"
 GROOT_COSMOS_MODEL_PATH="${GROOT_COSMOS_MODEL_PATH:-${MODELS_ROOT}/Cosmos-Reason2-2B}"
+FFMPEG_RUNTIME="${FFMPEG_RUNTIME:-${WORKSPACE_ROOT}/.tools/ffmpeg-7}"
 ISAAC_PYTHON="${ISAAC_PYTHON:-${WORKSPACE_ROOT}/env_isaaclab/bin/python}"
 ARENA_PYTHON="${ARENA_PYTHON:-${ISAAC_PYTHON}}"
 GROOT_PYTHON="${GROOT_PYTHON:-${GROOT_REPO}/.venv/bin/python}"
@@ -65,6 +66,12 @@ LOCAL_ISAAC_LIB="${WORKSPACE_ROOT}/.tools/isaac-system-libs/usr/lib/x86_64-linux
 if [ -d "${LOCAL_ISAAC_LIB}" ]; then
     export LD_LIBRARY_PATH="${LOCAL_ISAAC_LIB}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 fi
+if [ ! -x "${FFMPEG_RUNTIME}/bin/ffmpeg" ]; then
+    echo "FFmpeg runtime is missing: ${FFMPEG_RUNTIME}/bin/ffmpeg" >&2
+    exit 2
+fi
+export PATH="${FFMPEG_RUNTIME}/bin${PATH:+:${PATH}}"
+export LD_LIBRARY_PATH="${FFMPEG_RUNTIME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 export PYTHONUNBUFFERED=1
 
 require_branch "${GROOT_REPO}" "${GROOT_BRANCH}"
@@ -80,6 +87,10 @@ for required_path in \
         exit 2
     fi
 done
+if ! "${GROOT_PYTHON}" -c 'from torchcodec.decoders import VideoDecoder' >/dev/null; then
+    echo "TorchCodec cannot load the FFmpeg runtime at ${FFMPEG_RUNTIME}." >&2
+    exit 2
+fi
 
 CURRENT_STAGE="generation"
 if [ ! -f "${STATE_DIR}/generation.done" ]; then

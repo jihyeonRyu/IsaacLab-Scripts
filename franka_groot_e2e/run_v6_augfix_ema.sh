@@ -13,6 +13,7 @@ MODELS_ROOT="${MODELS_ROOT:-}"
 BASE_MODEL_PATH="${BASE_MODEL_PATH:-}"
 GROOT_COSMOS_MODEL_PATH="${GROOT_COSMOS_MODEL_PATH:-}"
 HF_HOME="${HF_HOME:-}"
+FFMPEG_RUNTIME="${FFMPEG_RUNTIME:-}"
 ARENA_PYTHON="${ARENA_PYTHON:-}"
 GROOT_PYTHON="${GROOT_PYTHON:-}"
 LEROBOT_DATASET="${LEROBOT_DATASET:-}"
@@ -59,6 +60,7 @@ Path options:
   --base-model-path PATH
   --cosmos-model-path PATH
   --hf-home PATH
+  --ffmpeg-runtime PATH
   --arena-python PATH
   --groot-python PATH
   --lerobot-dataset PATH
@@ -111,6 +113,7 @@ while [ "$#" -gt 0 ]; do
         --base-model-path) need_value "$@"; BASE_MODEL_PATH=$2; shift 2 ;;
         --cosmos-model-path) need_value "$@"; GROOT_COSMOS_MODEL_PATH=$2; shift 2 ;;
         --hf-home) need_value "$@"; HF_HOME=$2; shift 2 ;;
+        --ffmpeg-runtime) need_value "$@"; FFMPEG_RUNTIME=$2; shift 2 ;;
         --arena-python) need_value "$@"; ARENA_PYTHON=$2; shift 2 ;;
         --groot-python) need_value "$@"; GROOT_PYTHON=$2; shift 2 ;;
         --lerobot-dataset) need_value "$@"; LEROBOT_DATASET=$2; shift 2 ;;
@@ -155,6 +158,7 @@ MODELS_ROOT="$(realpath -m -- "${MODELS_ROOT:-${WORKSPACE_ROOT}/models}")"
 BASE_MODEL_PATH="$(realpath -m -- "${BASE_MODEL_PATH:-${MODELS_ROOT}/GR00T-N1.7-3B}")"
 GROOT_COSMOS_MODEL_PATH="$(realpath -m -- "${GROOT_COSMOS_MODEL_PATH:-${MODELS_ROOT}/Cosmos-Reason2-2B}")"
 HF_HOME="$(realpath -m -- "${HF_HOME:-${MODELS_ROOT}/huggingface-cache}")"
+FFMPEG_RUNTIME="$(realpath -m -- "${FFMPEG_RUNTIME:-${WORKSPACE_ROOT}/.tools/ffmpeg-7}")"
 ARENA_PYTHON="$(normalize_executable_path "${ARENA_PYTHON:-${WORKSPACE_ROOT}/env_isaaclab/bin/python}")"
 GROOT_PYTHON="$(normalize_executable_path "${GROOT_PYTHON:-${GROOT_REPO}/.venv/bin/python}")"
 LEROBOT_DATASET="$(realpath -m -- "${LEROBOT_DATASET:-${WORKSPACE_ROOT}/datasets/franka_waypoint10_recovery1_seed70007_v5_lerobot}")"
@@ -174,6 +178,7 @@ Resolved v6 augmentation-fix + EMA paths/settings
   GR00T model    : ${BASE_MODEL_PATH}
   Cosmos model   : ${GROOT_COSMOS_MODEL_PATH}
   LeRobot input  : ${LEROBOT_DATASET}
+  FFmpeg runtime : ${FFMPEG_RUNTIME}
   experiment     : ${EXPERIMENT_NAME}
   EMA checkpoint : ${CHECKPOINT}
   attention dir  : ${ATTENTION_DIR}
@@ -216,6 +221,17 @@ if [ "$(git -C "${GROOT_REPO}" branch --show-current)" != "${GROOT_BRANCH}" ]; t
 fi
 if [ "$(git -C "${ARENA_REPO}" branch --show-current)" != "${ARENA_BRANCH}" ]; then
     echo "Arena repo must be on ${ARENA_BRANCH}" >&2
+    exit 2
+fi
+if [ ! -x "${FFMPEG_RUNTIME}/bin/ffmpeg" ]; then
+    echo "FFmpeg runtime is missing: ${FFMPEG_RUNTIME}/bin/ffmpeg" >&2
+    echo "Run install_franka_groot_e2e.sh or pass --ffmpeg-runtime." >&2
+    exit 2
+fi
+export PATH="${FFMPEG_RUNTIME}/bin${PATH:+:${PATH}}"
+export LD_LIBRARY_PATH="${FFMPEG_RUNTIME}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+if ! "${GROOT_PYTHON}" -c 'from torchcodec.decoders import VideoDecoder' >/dev/null; then
+    echo "TorchCodec cannot load the FFmpeg runtime at ${FFMPEG_RUNTIME}." >&2
     exit 2
 fi
 if ! grep -q -- '--processor-state-dropout-prob' "${GROOT_REPO}/examples/Franka/train_franka.sh"; then
