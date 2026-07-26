@@ -1,4 +1,4 @@
 solver_recovery_total_attempts,episodes,successful_episodes,failed_episodes,success_rate_pct
-0,702,699,3,99.57264957264957
-1,108,41,67,37.96296296296296
-2,1,0,1,0.0
+0,1835,1675,160,91.28065395095368
+1,163,80,83,49.079754601226995
+2,2,2,0,100.0

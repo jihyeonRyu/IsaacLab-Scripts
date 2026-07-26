@@ -1,137 +1,137 @@
 {
-  "total_failures": 71,
+  "total_failures": 243,
   "failure_reason_counts": [
     {
+      "failure_reason": "transport_stall",
+      "count": 167,
+      "pct_of_failures": 68.72427983539094
+    },
+    {
       "failure_reason": "solver_recovery_exhausted",
-      "count": 68,
-      "pct_of_failures": 95.77464788732394
+      "count": 69,
+      "pct_of_failures": 28.395061728395063
     },
     {
       "failure_reason": "state_timeout",
-      "count": 3,
-      "pct_of_failures": 4.225352112676056
+      "count": 5,
+      "pct_of_failures": 2.05761316872428
+    },
+    {
+      "failure_reason": "placement_verification",
+      "count": 2,
+      "pct_of_failures": 0.823045267489712
     }
   ],
   "failed_state_counts": [
     {
       "failed_state": "move_above_slot",
-      "count": 30,
-      "pct_of_failures": 42.25352112676056
+      "count": 138,
+      "pct_of_failures": 56.79012345679013
     },
     {
       "failed_state": "approach",
-      "count": 24,
-      "pct_of_failures": 33.80281690140845
-    },
-    {
-      "failed_state": "align_yaw",
-      "count": 9,
-      "pct_of_failures": 12.67605633802817
-    },
-    {
-      "failed_state": "retreat",
-      "count": 3,
-      "pct_of_failures": 4.225352112676056
+      "count": 31,
+      "pct_of_failures": 12.757201646090534
     },
     {
       "failed_state": "place_descend",
-      "count": 2,
-      "pct_of_failures": 2.816901408450704
+      "count": 30,
+      "pct_of_failures": 12.345679012345679
+    },
+    {
+      "failed_state": "align_yaw",
+      "count": 28,
+      "pct_of_failures": 11.522633744855968
     },
     {
       "failed_state": "descend",
-      "count": 2,
-      "pct_of_failures": 2.816901408450704
+      "count": 6,
+      "pct_of_failures": 2.4691358024691357
+    },
+    {
+      "failed_state": "retreat",
+      "count": 6,
+      "pct_of_failures": 2.4691358024691357
     },
     {
       "failed_state": "recenter_after_yaw",
-      "count": 1,
-      "pct_of_failures": 1.408450704225352
+      "count": 4,
+      "pct_of_failures": 1.646090534979424
     }
   ],
   "solver_recovery_outcomes": [
     {
       "solver_recovery_total_attempts": 0,
-      "episodes": 702,
-      "successful_episodes": 699,
-      "failed_episodes": 3,
-      "success_rate_pct": 99.57264957264957
+      "episodes": 1835,
+      "successful_episodes": 1675,
+      "failed_episodes": 160,
+      "success_rate_pct": 91.28065395095368
     },
     {
       "solver_recovery_total_attempts": 1,
-      "episodes": 108,
-      "successful_episodes": 41,
-      "failed_episodes": 67,
-      "success_rate_pct": 37.96296296296296
+      "episodes": 163,
+      "successful_episodes": 80,
+      "failed_episodes": 83,
+      "success_rate_pct": 49.079754601226995
     },
     {
       "solver_recovery_total_attempts": 2,
-      "episodes": 1,
-      "successful_episodes": 0,
-      "failed_episodes": 1,
-      "success_rate_pct": 0.0
+      "episodes": 2,
+      "successful_episodes": 2,
+      "failed_episodes": 0,
+      "success_rate_pct": 100.0
     }
   ],
   "failed_states_by_blue_cube_count": [
     {
       "blue_cube_count": 1,
       "failed_state": "align_yaw",
-      "count": 2
+      "count": 5
     },
     {
       "blue_cube_count": 1,
       "failed_state": "approach",
-      "count": 11
+      "count": 7
     },
     {
       "blue_cube_count": 1,
       "failed_state": "move_above_slot",
-      "count": 2
-    },
-    {
-      "blue_cube_count": 1,
-      "failed_state": "place_descend",
-      "count": 1
-    },
-    {
-      "blue_cube_count": 1,
-      "failed_state": "retreat",
-      "count": 1
+      "count": 5
     },
     {
       "blue_cube_count": 2,
       "failed_state": "align_yaw",
-      "count": 7
+      "count": 23
     },
     {
       "blue_cube_count": 2,
       "failed_state": "approach",
-      "count": 13
+      "count": 24
     },
     {
       "blue_cube_count": 2,
       "failed_state": "descend",
-      "count": 2
+      "count": 6
     },
     {
       "blue_cube_count": 2,
       "failed_state": "move_above_slot",
-      "count": 28
+      "count": 133
     },
     {
       "blue_cube_count": 2,
       "failed_state": "place_descend",
-      "count": 1
+      "count": 30
     },
     {
       "blue_cube_count": 2,
       "failed_state": "recenter_after_yaw",
-      "count": 1
+      "count": 4
     },
     {
       "blue_cube_count": 2,
       "failed_state": "retreat",
-      "count": 2
+      "count": 6
     }
   ]
 }

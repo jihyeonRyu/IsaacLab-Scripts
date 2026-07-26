@@ -1,26 +1,16 @@
 <!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Franka GR00T maximum-two-cube evaluation</title>
+<title>Franka GR00T Arena results</title>
 <style>
-body{font-family:system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;color:#17202a}h1{margin-bottom:4px}.metric{font-size:2rem;font-weight:700;color:#0b6b3a}table{border-collapse:collapse;margin:20px 0}th,td{border:1px solid #ccd1d1;padding:9px 14px;text-align:right}th:first-child,td:first-child{text-align:left}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:20px}video{width:100%;background:#111;border-radius:8px}.card{border:1px solid #d5dbdb;border-radius:10px;padding:14px}code{background:#f2f3f4;padding:2px 5px}
-</style>
-</head>
-<body>
-<h1>Franka GR00T evaluation</h1>
-<p>Maximum two blue cubes · fixed default robot pose · 100 episodes per task · 8 GPUs</p>
-<p class="metric">2-cube success: 62/100 (62%)</p>
-<table><thead><tr><th>Task</th><th>Successes</th><th>Failures</th><th>Rate</th></tr></thead><tbody>
-<tr><td>1 blue cube</td><td>95</td><td>5</td><td>95%</td></tr>
-<tr><td>2 blue cubes</td><td>62</td><td>38</td><td>62%</td></tr>
-</tbody></table>
-<div class="grid">
-<div class="card"><h2>1 cube · success</h2><video controls src="1-cube-success-external.mp4"></video></div>
-<div class="card"><h2>1 cube · failure</h2><video controls src="1-cube-failure-external.mp4"></video></div>
-<div class="card"><h2>2 cubes · success</h2><video controls src="2-cubes-success-external.mp4"></video></div>
-<div class="card"><h2>2 cubes · failure</h2><video controls src="2-cubes-failure-external.mp4"></video></div>
-</div>
-<p>Machine-readable provenance: <a href="summary.json">summary.json</a>, <a href="manifest.json">manifest.json</a>, <a href="representative_episodes.json">representative_episodes.json</a>.</p>
+body{font:16px system-ui;margin:2rem;background:#111;color:#eee}
+table{border-collapse:collapse;width:100%}th,td{border:1px solid #555;padding:.7rem}
+video{width:min(38vw,520px)}a{color:#8cf}
+</style></head><body>
+<h1>Franka GR00T — fixed-default-pose Arena evaluation</h1>
+<table><thead><tr><th>Task</th><th>Result</th><th>Success</th><th>Failure</th></tr></thead>
+<tbody><tr><th>1 blue cube</th><td>97/100 (97.0%)</td><td><video controls muted preload='metadata' src='1-cube-success-external.mp4'></video></td><td><video controls muted preload='metadata' src='1-cube-failure-external.mp4'></video></td></tr><tr><th>2 blue cubes</th><td>67/100 (67.0%)</td><td><video controls muted preload='metadata' src='2-cubes-success-external.mp4'></video></td><td><video controls muted preload='metadata' src='2-cubes-failure-external.mp4'></video></td></tr></tbody></table>
+<p><a href="summary.json">summary.json</a> ·
+<a href="manifest.json">manifest.json</a> ·
+<a href="representative_episodes.json">representative_episodes.json</a></p>
 </body></html>

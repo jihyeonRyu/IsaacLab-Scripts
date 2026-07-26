@@ -1,56 +1,25 @@
 # Franka synthetic data → GR00T → IsaacLab-Arena
 
-This directory is the reproducible, maximum-two-blue-cube workflow for Franka
-synthetic-data generation, GR00T N1.7 SFT, and IsaacLab-Arena evaluation. The
-production launcher uses eight GPUs and evaluates from the fixed default robot
-pose.
+This is the reproducible maximum-two-blue-cube workflow for Franka synthetic
+generation, GR00T N1.7 SFT with EMA, and fixed-default-pose IsaacLab-Arena
+evaluation.
 
-## Validated result
+## Latest validated result
 
-The final Arena run used 100 independent episodes per task, generation-matched
-camera/object/tray/lighting settings, distinct evaluation seeds, and the final
-18,000-step EMA checkpoint.
+The final Arena run uses 100 independent episodes per task, eight GPUs,
+generation-matched camera/object/tray/lighting settings, distinct evaluation
+seeds, and checkpoint `/workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-max2-robust-2000-ema/checkpoint-25000-ema`.
 
 | Task | Successes | Episodes | Success rate |
 |---|---:|---:|---:|
-| 1 blue cube | 95 | 100 | 95% |
-| **2 blue cubes** | **62** | **100** | **62%** |
+| 1 blue cube | 97 | 100 | 97.0% |
+| **2 blue cubes** | **67** | **100** | **67.0%** |
 
-The delivery metric is the **2-blue-cube success rate: 62/100 (62%)**.
+Machine-readable results: [assets/arena/summary.json](assets/arena/summary.json).
 
-- Checkpoint: `/workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-partial-progress-1200-ema/checkpoint-18000-ema`
-- W&B: [franka-blue-cube-partial-progress-1200-ema](https://wandb.ai/nv-default-onboard/franka-gr00t/runs/94hk6yln)
-- Machine-readable results: [assets/arena/summary.json](assets/arena/summary.json)
+## Install
 
-## Repository layout
-
-```text
-franka_groot_e2e/
-├── install_franka_groot_e2e.sh
-├── run_pipeline.sh
-├── scripts/
-│   ├── 01_generate/
-│   │   ├── franka_lift_auto_parallel.py
-│   │   └── analyze_franka_trajectories.py
-│   └── 02_convert/
-│       └── convert_franka_to_groot_lerobot.py
-└── assets/
-    ├── analysis/
-    ├── arena/
-    ├── attention/
-    └── generation/
-```
-
-Source branches:
-
-- `jihyeonRyu/Isaac-GR00T:jryu/franka-demo`
-- `jihyeonRyu/IsaacLab-Arena:jryu/franka-demo`
-- `jihyeonRyu/IsaacLab-Scripts:main`
-
-## 1. Install
-
-Use the same NVIDIA Isaac Lab Docker image for generation and Arena. The host
-must expose eight CUDA GPUs and provide roughly 200 GB of free storage.
+Use the NVIDIA Isaac Lab container with eight CUDA GPUs:
 
 ```bash
 bash /workspace/IsaacLab-Scripts/franka_groot_e2e/install_franka_groot_e2e.sh \
@@ -58,110 +27,81 @@ bash /workspace/IsaacLab-Scripts/franka_groot_e2e/install_franka_groot_e2e.sh \
   --accept-eula
 ```
 
-Customer-defined paths are supported:
-
-```bash
-bash franka_groot_e2e/install_franka_groot_e2e.sh \
-  --workspace-root /customer/workspace \
-  --scripts-repo /customer/workspace/IsaacLab-Scripts \
-  --groot-repo /customer/workspace/Isaac-GR00T \
-  --arena-repo /customer/workspace/IsaacLab-Arena \
-  --models-root /customer/workspace/models
-```
-
-The installer creates isolated environments:
-
-- `env_isaaclab`: Isaac Lab generation and Arena workers;
-- `Isaac-GR00T/.venv`: conversion, SFT, inference, attention;
-- `IsaacLab-Arena/.venv`: Arena coordinator;
-- `.tools/ffmpeg-7`: TorchCodec-compatible FFmpeg.
-
-It also downloads the public GR00T N1.7 3B and Cosmos Reason2 2B weights. The
-model downloads do not require Hugging Face authentication. W&B is separate:
+The installer accepts custom `--scripts-repo`, `--groot-repo`, `--arena-repo`,
+and `--models-root` paths. It creates isolated Isaac Lab, GR00T, and Arena
+environments and downloads public GR00T N1.7 3B and Cosmos Reason2 2B weights.
+W&B authentication remains explicit:
 
 ```bash
 /workspace/Isaac-GR00T/.venv/bin/wandb login
 ```
 
-Use `--print-config` to inspect resolved paths without installing anything.
-
-## 2. Run end to end
+## Run end to end
 
 ```bash
-cd /workspace/IsaacLab-Scripts
-nohup bash franka_groot_e2e/run_pipeline.sh \
+nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/run_pipeline.sh \
   --workspace-root /workspace \
   > /workspace/output/franka_final_pipeline.log 2>&1 &
-echo $! > /workspace/output/franka_final_pipeline.pid
 ```
 
-Monitor it with:
+The restart-safe stages are generation, analysis, LeRobot conversion, coverage
+planning, SFT, final EMA attention, maximum-two-cube Arena evaluation, and
+checkpoint cleanup.
+
+Attach the automatic monitor/finalizer after starting the pipeline:
 
 ```bash
-tail -f /workspace/output/franka_final_pipeline.log
-cat /workspace/output/franka_e2e_pipeline_final/status.log
+nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/monitor_and_finalize.sh   >/dev/null 2>&1 &
 ```
 
-To monitor all stages and automatically package, document, commit, and push the
-final evidence after successful completion:
+The watchdog writes `/workspace/output/franka_final_monitor.log`. After a
+verified `complete.done`, it packages the latest analysis, representative
+generation/Arena videos, four EMA attention probes, refreshes this document and
+`/workspace/FRANKA_GROOT_WORKFLOW.md`, then commits and pushes the evidence.
 
-```bash
-nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/monitor_and_finalize.sh \
-  >/dev/null 2>&1 &
-tail -f /workspace/output/franka_final_monitor.log
-```
+## Synthetic generation
 
-The launcher is restart-safe at completed stage boundaries and refuses to
-silently overwrite non-empty partial outputs. Its stages are generation,
-analysis, LeRobot conversion, coverage planning, SFT, final EMA attention,
-maximum-two-cube Arena evaluation, and checkpoint cleanup.
-
-## 3. Synthetic generation
-
-The final launcher records 1,200 attempts with seed `90007`, eight GPUs, and
-four vector environments per GPU. It is configured for one or two blue cubes.
-
-- 15 FPS, 320×256 RGB, `external` and `wrist` cameras;
-- stratified 4×6 target grid over X `0.33–0.70 m`, Y `-0.34–0.34 m`;
-- radial workspace limit `0.68 m`;
-- randomized start EEF X `0.36–0.70 m`, Y `-0.34–0.34 m`, Z `0.25–0.55 m`;
-- validated floor-facing tool orientation preserved;
-- full-range random background RGB plus camera/tray/object/light randomization;
-- post-yaw X/Y cube-center alignment before descent;
-- 10% pre-grasp recovery waypoint probability at radius 4–8 cm;
-- one solver-recovery retry per cube;
-- 2-cube curriculum: 75% full start and 25% with one cube preplaced;
-- only successful trajectories are converted.
-
-Maximum-two-cube analysis of the delivered generation run:
+- attempts / seed: `2000` / `91007`;
+- 8 GPUs × 4 vector environments, 15 FPS, 320×256 RGB;
+- `external` and `wrist` cameras;
+- one/two cube mix 25/75%;
+- two-cube one-preplaced continuation probability 30%;
+- stratified target grid 4×6 and start grid 4×6×3;
+- start EEF X 0.36–0.70 m, Y -0.34–0.34 m, Z 0.25–0.55 m;
+- 2c1p start XY radius 0–5 cm, clearance 12–20 cm, yaw -45°–45°;
+- unreachable samples resolved to safe IK-boundary poses before recording;
+- 10% pre-grasp near-cube recovery, radius 4–8 cm;
+- one solver recovery retry; no post-grasp wandering;
+- only successful trajectories enter LeRobot.
 
 | Scenario | Successful | Attempts | Generator success rate |
 |---|---:|---:|---:|
-| 1 cube | 406 | 423 | 95.98% |
-| 2 cubes | 334 | 388 | 86.08% |
-| **Combined** | **740** | **811** | **91.25%** |
+| 1 cube | 478 | 495 | 96.57% |
+| 2 cubes | 1279 | 1505 | 84.98% |
+| **Combined** | **1757** | **2000** | **87.85%** |
 
-For two cubes, full-start trajectories were 245/295 (83.05%); one-preplaced
-continuations were 89/93 (95.70%).
+Two-cube full starts: 826/1032
+(80.04%); one-preplaced continuations:
+453/473
+(95.77%).
 
-Representative videos:
+Representative generation videos:
 
-- [2-cube full start](assets/generation/2c-full-start-success-episode-000266-external.mp4)
-- [2-cube one-preplaced continuation](assets/generation/2c-1-preplaced-success-episode-000300-external.mp4)
+- [2-cube full start](assets/generation/2c-full-start-success-episode_000002-external.mp4)
+- [2-cube one-preplaced continuation](assets/generation/2c-1-preplaced-success-episode_000001-external.mp4)
 
 Analysis:
 
 - [trajectory distribution](assets/analysis/trajectory_distribution.png)
 - [trajectory by cube count](assets/analysis/trajectory_by_blue_cube_count.png)
 - [workspace coverage](assets/analysis/workspace_coverage.png)
-- [scenario statistics](assets/analysis/scenario_statistics.png)
-- [progress-stage statistics](assets/analysis/progress_stage_statistics.png)
+- [progress stages](assets/analysis/progress_stage_statistics.png)
 - [failure causes](assets/analysis/failure_analysis.png)
 
-## 4. LeRobot data contract
+## LeRobot data contract
 
-The delivered dataset has 1,068 successful episodes, 542,788 frames, two RGB
-camera streams, and 15 FPS.
+Dataset: 1757 successful episodes,
+754545 frames at 15.0 FPS.
 
 | Field | Contract |
 |---|---|
@@ -172,62 +112,44 @@ camera streams, and 15 FPS.
 | Language | `annotation.human.action.task_description` |
 | Normalization | percentile min-max |
 
-Each target is the stored `action[t:t+40]` window. The conversion does not
-re-integrate or replace the recorded delta action. Progress metadata remains in
-`meta/episodes.jsonl` for auditable continuation sampling.
-
-## 5. GR00T SFT
-
-Validated training configuration:
+## GR00T SFT
 
 | Setting | Value |
 |---|---|
-| GPUs / global batch | 8 / 128 (16 per GPU) |
-| Steps | 18,000 |
-| Valid windows | 501,136 |
-| Nominal data passes | 4.60 |
+| Experiment | `franka-blue-cube-max2-robust-2000-ema` |
+| GPUs / global batch | 8 / 128 |
+| Steps | 25000 |
+| Valid windows | 686022 |
+| Nominal data passes | 4.664573439335765 |
 | LR / schedule | `1e-4` / cosine, 5% warmup |
-| Weight decay | `1e-5` |
-| Crop fraction | `0.98` |
+| Crop / state dropout | `0.98` / `0.2` |
 | Color jitter | brightness `0.25`, contrast `0.25`, saturation `0.30`, hue `0.03` |
-| State dropout | action head `0.2`, processor `0.0` |
 | EMA | FP32, decay `0.999`, every optimizer step |
-| Final train loss | `0.04540097` |
-| Runtime | 2 h 49 min 58 s |
+| Runtime | 3h 58m 14s |
 
-The final four attention probes are two 2-cube full-start samples and two
-2-cube one-preplaced continuation samples, all rendered from the EMA checkpoint
-at frame 120:
+Final continuation-aware EMA attention probes:
 
-- [full start, episode 0](assets/attention/final-ema-episode-0-step-120.png)
-- [continuation, episode 2](assets/attention/final-ema-episode-2-step-120.png)
-- [full start, episode 3](assets/attention/final-ema-episode-3-step-120.png)
-- [continuation, episode 6](assets/attention/final-ema-episode-6-step-120.png)
+- [final-ema-episode-0-step-120](assets/attention/final-ema-episode-0-step-120.png)
+- [final-ema-episode-1-step-120](assets/attention/final-ema-episode-1-step-120.png)
+- [final-ema-episode-2-step-120](assets/attention/final-ema-episode-2-step-120.png)
+- [final-ema-episode-3-step-120](assets/attention/final-ema-episode-3-step-120.png)
 
-## 6. IsaacLab-Arena evaluation
+## IsaacLab-Arena evaluation
 
-Arena runs one GR00T server and one simulator worker per GPU. The launcher
-selects only the 1- and 2-cube tasks, with 100 episodes each. Evaluation seeds
-start at `10007` and `20007`, separate from generation seed `90007`.
-
-The policy start pose is always the fixed default Franka pose. Randomized starts
-require explicit opt-in and are not used in the reported result. Camera,
-objects, tray, lighting, rendering, observation/action adapters, and task prompt
-match generation/training. GR00T predicts a 40-frame action horizon and Arena
-executes the first 16 actions at 15 Hz before the next inference call.
-
-Representative Arena videos:
+Arena runs one GR00T server and one simulator worker per GPU. It evaluates only
+the 1- and 2-cube tasks, 100 episodes each, from the fixed default Franka pose.
+Evaluation seeds start at 10007 and 20007, independent of generation seed
+91007. GR00T predicts 40 frames and Arena executes the first 16
+actions at 15 Hz before the next inference.
 
 | Task | Success | Failure |
 |---|---|---|
 | 1 cube | [video](assets/arena/1-cube-success-external.mp4) | [video](assets/arena/1-cube-failure-external.mp4) |
 | 2 cubes | [video](assets/arena/2-cubes-success-external.mp4) | [video](assets/arena/2-cubes-failure-external.mp4) |
 
-To serve the packaged result assets:
+Serve the packaged result:
 
 ```bash
 python3 -m http.server 8000 \
   --directory /workspace/IsaacLab-Scripts/franka_groot_e2e/assets/arena
 ```
-
-Then open `http://SERVER_IP:8000/`.

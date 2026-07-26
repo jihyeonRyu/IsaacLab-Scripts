@@ -4,7 +4,7 @@
     "isaacsim": "6.0.1.0"
   },
   "arena_python": "/workspace/env_isaaclab/bin/python",
-  "checkpoint": "/workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-partial-progress-1200-ema/checkpoint-18000-ema",
+  "checkpoint": "/workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-max2-robust-2000-ema/checkpoint-25000-ema",
   "cosmos_model_path": "/workspace/models/Cosmos-Reason2-2B",
   "episode_counts_by_rank": [
     13,

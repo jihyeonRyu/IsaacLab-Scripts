@@ -1,10 +1,10 @@
 {
-  "input_root": "/workspace/output/franka_partial_progress_1200eps_seed90007",
+  "input_root": "/workspace/output/franka_max2_robust_2000eps_seed91007",
   "trajectory_source": "logs/states.jsonl:ee_pos_env",
-  "episodes": 811,
-  "successful_episodes": 740,
-  "failed_episodes": 71,
-  "success_rate_pct": 91.24537607891492,
+  "episodes": 2000,
+  "successful_episodes": 1757,
+  "failed_episodes": 243,
+  "success_rate_pct": 87.85,
   "blue_cube_counts": [
     1,
     2
@@ -12,51 +12,51 @@
   "scenario_statistics": [
     {
       "blue_cube_count": 1,
-      "episodes": 423,
-      "successful_episodes": 406,
+      "episodes": 495,
+      "successful_episodes": 478,
       "failed_episodes": 17,
-      "success_rate_pct": 95.98108747044917,
-      "trajectory_points": 129308,
-      "mean_frames": 305.69267139479905,
-      "mean_duration_s": 20.31284475965327,
-      "mean_path_length_m": 1.1252804519762578,
-      "median_path_length_m": 1.0645133245752332,
-      "recovery_planned_episodes": 48,
-      "recovery_completed_episodes": 48,
-      "solver_recovery_attempts": 28,
-      "x_min_m": 0.35830044746398926,
-      "x_max_m": 0.7162107229232788,
-      "x_span_m": 0.35791027545928955,
-      "y_min_m": -0.32723498344421387,
-      "y_max_m": 0.33378708362579346,
-      "y_span_m": 0.6610220670700073,
-      "z_min_m": 0.02080933004617691,
-      "z_max_m": 0.5455638766288757,
-      "z_span_m": 0.5247545465826988
+      "success_rate_pct": 96.56565656565657,
+      "trajectory_points": 150990,
+      "mean_frames": 305.030303030303,
+      "mean_duration_s": 20.268686868686867,
+      "mean_path_length_m": 1.1201769816814369,
+      "median_path_length_m": 1.0899396412157536,
+      "recovery_planned_episodes": 42,
+      "recovery_completed_episodes": 42,
+      "solver_recovery_attempts": 26,
+      "x_min_m": 0.3583180904388428,
+      "x_max_m": 0.6895791292190552,
+      "x_span_m": 0.3312610387802124,
+      "y_min_m": -0.32663393020629883,
+      "y_max_m": 0.33222925662994385,
+      "y_span_m": 0.6588631868362427,
+      "z_min_m": 0.021046243607997894,
+      "z_max_m": 0.5440430045127869,
+      "z_span_m": 0.522996760904789
     },
     {
       "blue_cube_count": 2,
-      "episodes": 388,
-      "successful_episodes": 334,
-      "failed_episodes": 54,
-      "success_rate_pct": 86.08247422680412,
-      "trajectory_points": 215947,
-      "mean_frames": 556.5644329896908,
-      "mean_duration_s": 37.037628865979386,
-      "mean_path_length_m": 2.002314975238043,
-      "median_path_length_m": 1.9996365350987375,
-      "recovery_planned_episodes": 64,
-      "recovery_completed_episodes": 37,
-      "solver_recovery_attempts": 76,
-      "x_min_m": 0.35802578926086426,
-      "x_max_m": 0.6908607482910156,
-      "x_span_m": 0.33283495903015137,
-      "y_min_m": -0.315873384475708,
-      "y_max_m": 0.3263249397277832,
-      "y_span_m": 0.6421983242034912,
-      "z_min_m": 0.021374419331550598,
-      "z_max_m": 0.542716920375824,
-      "z_span_m": 0.5213425010442734
+      "episodes": 1505,
+      "successful_episodes": 1279,
+      "failed_episodes": 226,
+      "success_rate_pct": 84.98338870431894,
+      "trajectory_points": 750813,
+      "mean_frames": 498.8790697674419,
+      "mean_duration_s": 33.19193798449613,
+      "mean_path_length_m": 1.8045161922632629,
+      "median_path_length_m": 1.926064248786553,
+      "recovery_planned_episodes": 247,
+      "recovery_completed_episodes": 144,
+      "solver_recovery_attempts": 122,
+      "x_min_m": 0.3565540313720703,
+      "x_max_m": 0.6925985813140869,
+      "x_span_m": 0.3360445499420166,
+      "y_min_m": -0.3287850618362427,
+      "y_max_m": 0.3327443599700928,
+      "y_span_m": 0.6615294218063354,
+      "z_min_m": 0.020045049488544464,
+      "z_max_m": 0.5445559620857239,
+      "z_span_m": 0.5245109125971794
     }
   ],
   "progress_stage_statistics": [
@@ -65,178 +65,274 @@
       "progress_stage": 0,
       "num_preplaced": 0,
       "num_remaining": 1,
-      "episodes": 423,
-      "successful_episodes": 406,
+      "episodes": 495,
+      "successful_episodes": 478,
       "failed_episodes": 17,
-      "success_rate_pct": 95.98108747044917,
-      "trajectory_points": 129308,
-      "mean_frames": 305.69267139479905,
-      "mean_duration_s": 20.31284475965327,
-      "mean_path_length_m": 1.1252804519762578
+      "success_rate_pct": 96.56565656565657,
+      "trajectory_points": 150990,
+      "mean_frames": 305.030303030303,
+      "mean_duration_s": 20.268686868686867,
+      "mean_path_length_m": 1.1201769816814369
     },
     {
       "blue_cube_count": 2,
       "progress_stage": 0,
       "num_preplaced": 0,
       "num_remaining": 2,
-      "episodes": 295,
-      "successful_episodes": 245,
-      "failed_episodes": 50,
-      "success_rate_pct": 83.05084745762711,
-      "trajectory_points": 187252,
-      "mean_frames": 634.7525423728814,
-      "mean_duration_s": 42.25016949152542,
-      "mean_path_length_m": 2.270627082842276
+      "episodes": 1032,
+      "successful_episodes": 826,
+      "failed_episodes": 206,
+      "success_rate_pct": 80.03875968992249,
+      "trajectory_points": 613404,
+      "mean_frames": 594.3837209302326,
+      "mean_duration_s": 39.558914728682176,
+      "mean_path_length_m": 2.142770970232118
     },
     {
       "blue_cube_count": 2,
       "progress_stage": 1,
       "num_preplaced": 1,
       "num_remaining": 1,
-      "episodes": 93,
-      "successful_episodes": 89,
-      "failed_episodes": 4,
-      "success_rate_pct": 95.6989247311828,
-      "trajectory_points": 28695,
-      "mean_frames": 308.5483870967742,
-      "mean_duration_s": 20.50322580645161,
-      "mean_path_length_m": 1.1512174296117124
+      "episodes": 473,
+      "successful_episodes": 453,
+      "failed_episodes": 20,
+      "success_rate_pct": 95.77167019027485,
+      "trajectory_points": 137409,
+      "mean_frames": 290.50528541226214,
+      "mean_duration_s": 19.300352360817474,
+      "mean_path_length_m": 1.0665057676039431
     }
   ],
+  "trajectory_mode_counts": {
+    "direct": 2731,
+    "recovery": 301
+  },
+  "start_position_stratum_counts": {
+    "0": 20,
+    "1": 22,
+    "2": 23,
+    "3": 20,
+    "4": 21,
+    "5": 20,
+    "6": 22,
+    "7": 22,
+    "8": 25,
+    "9": 20,
+    "10": 19,
+    "11": 26,
+    "12": 22,
+    "13": 25,
+    "14": 18,
+    "15": 23,
+    "16": 20,
+    "17": 24,
+    "18": 23,
+    "19": 23,
+    "20": 19,
+    "21": 24,
+    "22": 24,
+    "23": 21,
+    "24": 17,
+    "25": 18,
+    "26": 26,
+    "27": 24,
+    "28": 20,
+    "29": 17,
+    "30": 23,
+    "31": 24,
+    "32": 24,
+    "33": 23,
+    "34": 18,
+    "35": 19,
+    "36": 23,
+    "37": 22,
+    "38": 19,
+    "39": 22,
+    "40": 21,
+    "41": 18,
+    "42": 22,
+    "43": 22,
+    "44": 19,
+    "45": 19,
+    "46": 20,
+    "47": 23,
+    "48": 22,
+    "49": 21,
+    "50": 17,
+    "51": 22,
+    "52": 21,
+    "53": 18,
+    "54": 21,
+    "55": 21,
+    "56": 22,
+    "57": 23,
+    "58": 20,
+    "59": 25,
+    "60": 22,
+    "61": 20,
+    "62": 19,
+    "63": 19,
+    "64": 20,
+    "65": 16,
+    "66": 23,
+    "67": 19,
+    "68": 20,
+    "69": 20,
+    "70": 25,
+    "71": 22
+  },
+  "randomized_start_reachability": {
+    "samples": 2000,
+    "reached": 2000,
+    "position_fallback_count": 35,
+    "mean_position_fallback_shift_m": 0.030299114285714284,
+    "max_position_fallback_shift_m": 0.104868
+  },
+  "partial_progress_start_yaw_deg": {
+    "samples": 473,
+    "min_requested_deg": -44.9003,
+    "max_requested_deg": 44.7829,
+    "min_offset_deg": -44.9003,
+    "max_offset_deg": 44.7829,
+    "mean_offset_deg": -0.8932405919661736,
+    "max_error_deg": 2.4995,
+    "orientation_reached": 2000,
+    "fallback_count": 3
+  },
   "failure_analysis": {
-    "total_failures": 71,
+    "total_failures": 243,
     "failure_reason_counts": [
       {
+        "failure_reason": "transport_stall",
+        "count": 167,
+        "pct_of_failures": 68.72427983539094
+      },
+      {
         "failure_reason": "solver_recovery_exhausted",
-        "count": 68,
-        "pct_of_failures": 95.77464788732394
+        "count": 69,
+        "pct_of_failures": 28.395061728395063
       },
       {
         "failure_reason": "state_timeout",
-        "count": 3,
-        "pct_of_failures": 4.225352112676056
+        "count": 5,
+        "pct_of_failures": 2.05761316872428
+      },
+      {
+        "failure_reason": "placement_verification",
+        "count": 2,
+        "pct_of_failures": 0.823045267489712
       }
     ],
     "failed_state_counts": [
       {
         "failed_state": "move_above_slot",
-        "count": 30,
-        "pct_of_failures": 42.25352112676056
+        "count": 138,
+        "pct_of_failures": 56.79012345679013
       },
       {
         "failed_state": "approach",
-        "count": 24,
-        "pct_of_failures": 33.80281690140845
-      },
-      {
-        "failed_state": "align_yaw",
-        "count": 9,
-        "pct_of_failures": 12.67605633802817
-      },
-      {
-        "failed_state": "retreat",
-        "count": 3,
-        "pct_of_failures": 4.225352112676056
+        "count": 31,
+        "pct_of_failures": 12.757201646090534
       },
       {
         "failed_state": "place_descend",
-        "count": 2,
-        "pct_of_failures": 2.816901408450704
+        "count": 30,
+        "pct_of_failures": 12.345679012345679
+      },
+      {
+        "failed_state": "align_yaw",
+        "count": 28,
+        "pct_of_failures": 11.522633744855968
       },
       {
         "failed_state": "descend",
-        "count": 2,
-        "pct_of_failures": 2.816901408450704
+        "count": 6,
+        "pct_of_failures": 2.4691358024691357
+      },
+      {
+        "failed_state": "retreat",
+        "count": 6,
+        "pct_of_failures": 2.4691358024691357
       },
       {
         "failed_state": "recenter_after_yaw",
-        "count": 1,
-        "pct_of_failures": 1.408450704225352
+        "count": 4,
+        "pct_of_failures": 1.646090534979424
       }
     ],
     "solver_recovery_outcomes": [
       {
         "solver_recovery_total_attempts": 0,
-        "episodes": 702,
-        "successful_episodes": 699,
-        "failed_episodes": 3,
-        "success_rate_pct": 99.57264957264957
+        "episodes": 1835,
+        "successful_episodes": 1675,
+        "failed_episodes": 160,
+        "success_rate_pct": 91.28065395095368
       },
       {
         "solver_recovery_total_attempts": 1,
-        "episodes": 108,
-        "successful_episodes": 41,
-        "failed_episodes": 67,
-        "success_rate_pct": 37.96296296296296
+        "episodes": 163,
+        "successful_episodes": 80,
+        "failed_episodes": 83,
+        "success_rate_pct": 49.079754601226995
       },
       {
         "solver_recovery_total_attempts": 2,
-        "episodes": 1,
-        "successful_episodes": 0,
-        "failed_episodes": 1,
-        "success_rate_pct": 0.0
+        "episodes": 2,
+        "successful_episodes": 2,
+        "failed_episodes": 0,
+        "success_rate_pct": 100.0
       }
     ],
     "failed_states_by_blue_cube_count": [
       {
         "blue_cube_count": 1,
         "failed_state": "align_yaw",
-        "count": 2
+        "count": 5
       },
       {
         "blue_cube_count": 1,
         "failed_state": "approach",
-        "count": 11
+        "count": 7
       },
       {
         "blue_cube_count": 1,
         "failed_state": "move_above_slot",
-        "count": 2
-      },
-      {
-        "blue_cube_count": 1,
-        "failed_state": "place_descend",
-        "count": 1
-      },
-      {
-        "blue_cube_count": 1,
-        "failed_state": "retreat",
-        "count": 1
+        "count": 5
       },
       {
         "blue_cube_count": 2,
         "failed_state": "align_yaw",
-        "count": 7
+        "count": 23
       },
       {
         "blue_cube_count": 2,
         "failed_state": "approach",
-        "count": 13
+        "count": 24
       },
       {
         "blue_cube_count": 2,
         "failed_state": "descend",
-        "count": 2
+        "count": 6
       },
       {
         "blue_cube_count": 2,
         "failed_state": "move_above_slot",
-        "count": 28
+        "count": 133
       },
       {
         "blue_cube_count": 2,
         "failed_state": "place_descend",
-        "count": 1
+        "count": 30
       },
       {
         "blue_cube_count": 2,
         "failed_state": "recenter_after_yaw",
-        "count": 1
+        "count": 4
       },
       {
         "blue_cube_count": 2,
         "failed_state": "retreat",
-        "count": 2
+        "count": 6
       }
     ]
   },
@@ -253,92 +349,92 @@
         6
       ],
       "all_targets": {
-        "samples": 423,
+        "samples": 495,
         "occupied_cells": 24,
         "total_cells": 24,
-        "cell_count_cv": 0.5635360609943051,
+        "cell_count_cv": 0.5016898288982518,
         "cell_counts": [
           [
-            8,
-            12,
-            18,
-            20,
-            13,
-            4
-          ],
-          [
+            5,
+            17,
+            17,
+            23,
             16,
-            18,
-            34,
-            36,
-            27,
-            6
+            12
           ],
           [
             12,
-            24,
-            32,
-            36,
+            29,
             28,
-            10
+            42,
+            27,
+            21
           ],
           [
-            6,
             13,
-            18,
-            16,
-            14,
-            2
+            32,
+            26,
+            44,
+            30,
+            16
+          ],
+          [
+            4,
+            19,
+            12,
+            26,
+            19,
+            5
           ]
         ],
-        "x_min_m": 0.3690642647438249,
-        "x_max_m": 0.6606602352271705,
-        "y_min_m": -0.29468681250501355,
-        "y_max_m": 0.28042368819548724
+        "x_min_m": 0.36717559878765865,
+        "x_max_m": 0.6605218459257569,
+        "y_min_m": -0.29248571097627313,
+        "y_max_m": 0.3008997830742086
       },
       "first_target": {
-        "samples": 423,
+        "samples": 495,
         "occupied_cells": 24,
         "total_cells": 24,
-        "cell_count_cv": 0.5635360609943051,
+        "cell_count_cv": 0.5016898288982518,
         "cell_counts": [
           [
-            8,
-            12,
-            18,
-            20,
-            13,
-            4
-          ],
-          [
+            5,
+            17,
+            17,
+            23,
             16,
-            18,
-            34,
-            36,
-            27,
-            6
+            12
           ],
           [
             12,
-            24,
-            32,
-            36,
+            29,
             28,
-            10
+            42,
+            27,
+            21
           ],
           [
-            6,
             13,
-            18,
-            16,
-            14,
-            2
+            32,
+            26,
+            44,
+            30,
+            16
+          ],
+          [
+            4,
+            19,
+            12,
+            26,
+            19,
+            5
           ]
         ],
-        "x_min_m": 0.3690642647438249,
-        "x_max_m": 0.6606602352271705,
-        "y_min_m": -0.29468681250501355,
-        "y_max_m": 0.28042368819548724
+        "x_min_m": 0.36717559878765865,
+        "x_max_m": 0.6605218459257569,
+        "y_min_m": -0.29248571097627313,
+        "y_max_m": 0.3008997830742086
       }
     },
     "2": {
@@ -353,92 +449,92 @@
         6
       ],
       "all_targets": {
-        "samples": 683,
+        "samples": 2537,
         "occupied_cells": 24,
         "total_cells": 24,
-        "cell_count_cv": 0.46539725344796606,
+        "cell_count_cv": 0.5931666461217099,
         "cell_counts": [
           [
-            17,
-            23,
-            32,
-            25,
-            28,
-            4
+            26,
+            94,
+            116,
+            146,
+            84,
+            22
           ],
           [
-            32,
-            36,
-            55,
-            34,
-            35,
-            11
+            52,
+            139,
+            208,
+            211,
+            129,
+            46
           ],
           [
-            30,
-            34,
-            60,
-            42,
-            37,
-            20
+            62,
+            147,
+            208,
+            221,
+            123,
+            50
           ],
           [
-            11,
-            34,
-            27,
-            23,
-            28,
-            5
+            19,
+            90,
+            121,
+            128,
+            86,
+            9
           ]
         ],
-        "x_min_m": 0.369452146190145,
-        "x_max_m": 0.662933821320135,
-        "y_min_m": -0.30151715935136963,
-        "y_max_m": 0.2983257553747804
+        "x_min_m": 0.36686791811072694,
+        "x_max_m": 0.6633341265822801,
+        "y_min_m": -0.30354758954644595,
+        "y_max_m": 0.303315460196242
       },
       "first_target": {
-        "samples": 388,
+        "samples": 1505,
         "occupied_cells": 24,
         "total_cells": 24,
-        "cell_count_cv": 0.490205914555412,
+        "cell_count_cv": 0.6161496582163084,
         "cell_counts": [
           [
-            9,
-            10,
-            18,
-            15,
-            16,
-            2
-          ],
-          [
-            18,
-            25,
-            28,
             17,
-            18,
-            6
+            60,
+            66,
+            87,
+            46,
+            16
           ],
           [
-            24,
-            19,
+            27,
+            82,
+            132,
+            131,
+            75,
+            29
+          ],
+          [
             35,
-            22,
-            24,
-            12
+            84,
+            132,
+            134,
+            69,
+            30
           ],
           [
-            5,
-            18,
-            18,
-            13,
-            14,
-            2
+            10,
+            51,
+            65,
+            63,
+            57,
+            7
           ]
         ],
-        "x_min_m": 0.369452146190145,
-        "x_max_m": 0.662933821320135,
-        "y_min_m": -0.30049665302325185,
-        "y_max_m": 0.29042053886410535
+        "x_min_m": 0.369670635093665,
+        "x_max_m": 0.6633341265822801,
+        "y_min_m": -0.30191898106793497,
+        "y_max_m": 0.303315460196242
       }
     }
   },

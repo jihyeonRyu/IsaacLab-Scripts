@@ -1,34 +1,38 @@
 {
   "1-cube-failure-external.mp4": {
+    "_source_results": "rank-02/stage-1_cube/franka_blue_tray_1_cube/episode_results_rebuild0.jsonl",
+    "env_id": 0,
+    "episode_in_env": 6,
     "episode_length": 4500,
-    "local_episode": 1,
-    "outcome": "failure",
-    "rank": "rank-04",
-    "seed": 10011,
-    "task": "franka_blue_tray_1_cube"
+    "job_name": "franka_blue_tray_1_cube",
+    "seed": 10009,
+    "success": false
   },
   "1-cube-success-external.mp4": {
-    "episode_length": 898,
-    "local_episode": 12,
-    "outcome": "success",
-    "rank": "rank-02",
-    "seed": 10009,
-    "task": "franka_blue_tray_1_cube"
+    "_source_results": "rank-03/stage-1_cube/franka_blue_tray_1_cube/episode_results_rebuild0.jsonl",
+    "env_id": 0,
+    "episode_in_env": 4,
+    "episode_length": 620,
+    "job_name": "franka_blue_tray_1_cube",
+    "seed": 10010,
+    "success": true
   },
   "2-cubes-failure-external.mp4": {
-    "episode_length": 4500,
-    "local_episode": 2,
-    "outcome": "failure",
-    "rank": "rank-03",
+    "_source_results": "rank-03/stage-2_cubes/franka_blue_tray_2_cubes/episode_results_rebuild0.jsonl",
+    "env_id": 0,
+    "episode_in_env": 5,
+    "episode_length": 3164,
+    "job_name": "franka_blue_tray_2_cubes",
     "seed": 20010,
-    "task": "franka_blue_tray_2_cubes"
+    "success": false
   },
   "2-cubes-success-external.mp4": {
-    "episode_length": 2322,
-    "local_episode": 10,
-    "outcome": "success",
-    "rank": "rank-01",
-    "seed": 20008,
-    "task": "franka_blue_tray_2_cubes"
+    "_source_results": "rank-00/stage-2_cubes/franka_blue_tray_2_cubes/episode_results_rebuild0.jsonl",
+    "env_id": 0,
+    "episode_in_env": 2,
+    "episode_length": 1687,
+    "job_name": "franka_blue_tray_2_cubes",
+    "seed": 20007,
+    "success": true
   }
 }
