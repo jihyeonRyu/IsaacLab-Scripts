@@ -85,7 +85,8 @@ def successful_generation_episode(
         video_path = episode_dir / "external_rgb.mp4"
         if not (scenario_path.is_file() and result_path.is_file() and video_path.is_file()):
             continue
-        scenario = read_json(scenario_path)
+        scenario_payload = read_json(scenario_path)
+        scenario = scenario_payload.get("scenario", scenario_payload)
         result = read_json(result_path)
         count = int(scenario.get("num_blue_total") or len(scenario.get("blue_cubes", [])))
         if (
