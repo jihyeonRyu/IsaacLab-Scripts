@@ -90,8 +90,9 @@ Other:
 
 Fixed task settings:
   Maximum two blue cubes, sampled 25/75%; 2-cube partial progress 30%.
-  Starts use stratified X/Y/Z workspace coverage. Target approach paths are
-  direct 90% and pre-grasp near-cube recovery 10%. Solver recovery is
+  Starts use stratified X/Y/Z workspace coverage; 2c1p starts additionally
+  randomize floor-facing gripper yaw in [-90, 90] degrees. Target approach
+  paths are direct 90% and pre-grasp near-cube recovery 10%. Solver recovery is
   limited to one retry. Arena evaluates 1/2-cube tasks from the fixed default
   robot pose while executing 16 actions at 15 Hz.
 EOF
@@ -202,6 +203,7 @@ Resolved final Franka pipeline
   LeRobot dataset    : ${LEROBOT_DATASET}
   generation         : ${GENERATION_EPISODES} attempts, seed ${GENERATION_SEED}, 8 GPUs x 4 envs
   scenario mix       : 1c=25%; 2c=75%; 2c one-preplaced=30%
+  partial start      : XY radius=0-5cm; Z clearance=12-20cm; yaw=-90..90deg
   trajectory mix     : direct=90%; pre-grasp near-cube recovery=10%
   experiment         : ${EXPERIMENT_NAME}
   batch              : ${GLOBAL_BATCH_SIZE} global ($((GLOBAL_BATCH_SIZE / 8)) per GPU)
@@ -345,6 +347,7 @@ if [ ! -f "${STATE_DIR}/generation.done" ]; then
             --partial_progress_2_cube_prob 0.30 \
             --partial_progress_start_xy_radius_range 0.0 0.05 \
             --partial_progress_start_clearance_range 0.12 0.20 \
+            --partial_progress_start_yaw_range_deg -90 90 \
             --solver_recovery_max_attempts 1
     fi
     "${ISAAC_PYTHON}" - "${RAW_DATASET}/multi_gpu_summary.json" "${GENERATION_EPISODES}" <<'PY'

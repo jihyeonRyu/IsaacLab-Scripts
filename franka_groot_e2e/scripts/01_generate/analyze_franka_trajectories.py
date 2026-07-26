@@ -48,6 +48,9 @@ class EpisodeTrajectory:
     num_remaining: int
     preplaced_blue_cube_names: list[str]
     start_position_stratum: int | None
+    start_ee_yaw_offset_deg: float | None
+    start_ee_yaw_error_deg: float | None
+    start_ee_orientation_reached: bool | None
     trajectory_modes: list[str]
     recovery_planned: bool
     recovery_augmented: bool
@@ -298,6 +301,19 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
             if scenario.get("start_position_stratum") is not None
             else None
         ),
+        start_ee_yaw_offset_deg=(
+            float(scenario["start_ee_yaw_offset_deg"])
+            if scenario.get("start_ee_yaw_offset_deg") is not None
+            else None
+        ),
+        start_ee_yaw_error_deg=(
+            float(scenario["start_ee_yaw_error_deg"])
+            if scenario.get("start_ee_yaw_error_deg") is not None
+            else None
+        ),
+        start_ee_orientation_reached=scenario.get(
+            "start_ee_orientation_reached"
+        ),
         trajectory_modes=[
             str(cube.get("trajectory_mode", "direct")) for cube in blue_cubes
         ],
@@ -353,6 +369,9 @@ def trajectory_metrics(episode: EpisodeTrajectory) -> dict[str, Any]:
         "num_remaining": episode.num_remaining,
         "preplaced_blue_cube_names": ";".join(episode.preplaced_blue_cube_names),
         "start_position_stratum": episode.start_position_stratum,
+        "start_ee_yaw_offset_deg": episode.start_ee_yaw_offset_deg,
+        "start_ee_yaw_error_deg": episode.start_ee_yaw_error_deg,
+        "start_ee_orientation_reached": episode.start_ee_orientation_reached,
         "trajectory_modes": ";".join(episode.trajectory_modes),
         "recovery_planned": episode.recovery_planned,
         "recovery_augmented": episode.recovery_augmented,
@@ -1120,6 +1139,31 @@ def main() -> None:
         for episode in episodes
         if episode.start_position_stratum is not None
     )
+    partial_yaw_offsets = [
+        float(episode.start_ee_yaw_offset_deg)
+        for episode in episodes
+        if episode.start_ee_yaw_offset_deg is not None
+    ]
+    partial_yaw_errors = [
+        float(episode.start_ee_yaw_error_deg)
+        for episode in episodes
+        if episode.start_ee_yaw_error_deg is not None
+    ]
+    partial_orientation_reached = [
+        bool(episode.start_ee_orientation_reached)
+        for episode in episodes
+        if episode.start_ee_orientation_reached is not None
+    ]
+    partial_yaw_summary = {
+        "samples": len(partial_yaw_offsets),
+        "min_offset_deg": min(partial_yaw_offsets) if partial_yaw_offsets else None,
+        "max_offset_deg": max(partial_yaw_offsets) if partial_yaw_offsets else None,
+        "mean_offset_deg": (
+            float(np.mean(partial_yaw_offsets)) if partial_yaw_offsets else None
+        ),
+        "max_error_deg": max(partial_yaw_errors) if partial_yaw_errors else None,
+        "orientation_reached": sum(partial_orientation_reached),
+    }
     summary = {
         "input_root": str(input_root),
         "trajectory_source": "logs/states.jsonl:ee_pos_env",
@@ -1134,6 +1178,7 @@ def main() -> None:
         "start_position_stratum_counts": {
             str(key): value for key, value in sorted(start_position_stratum_counts.items())
         },
+        "partial_progress_start_yaw_deg": partial_yaw_summary,
         "failure_analysis": failure_analysis,
         "workspace_coverage": workspace_coverage,
         "skipped_episodes": skipped,

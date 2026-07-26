@@ -325,7 +325,8 @@ def add_args() -> argparse.ArgumentParser:
         default=True,
         help=(
             "Move the EEF to a deterministic random robot-front tabletop position before recording. "
-            "The pre-roll translates only, preserving the validated floor-facing tool orientation."
+            "The pre-roll preserves the validated floor-facing tool tilt; partial-progress starts "
+            "may additionally randomize world-Z yaw."
         ),
     )
     parser.add_argument("--start_ee_x_range", type=float, nargs=2, default=(0.36, 0.70), metavar=("MIN", "MAX"))
@@ -420,6 +421,17 @@ def add_args() -> argparse.ArgumentParser:
         default=(0.12, 0.20),
         metavar=("MIN", "MAX"),
         help="EEF clearance above the most recently preplaced cube top.",
+    )
+    parser.add_argument(
+        "--partial_progress_start_yaw_range_deg",
+        type=float,
+        nargs=2,
+        default=(-90.0, 90.0),
+        metavar=("MIN", "MAX"),
+        help=(
+            "World-Z yaw offset range for partial-progress starts. "
+            "Tilt is preserved so the tool remains floor-facing."
+        ),
     )
     parser.add_argument(
         "--solver_recovery_max_attempts",
@@ -830,6 +842,18 @@ if (
         "--partial_progress_start_clearance_range must satisfy "
         "approach_height <= MIN <= MAX."
     )
+partial_yaw_min, partial_yaw_max = map(
+    float, args_cli.partial_progress_start_yaw_range_deg
+)
+if (
+    partial_yaw_min < -180.0
+    or partial_yaw_max > 180.0
+    or partial_yaw_max < partial_yaw_min
+):
+    parser.error(
+        "--partial_progress_start_yaw_range_deg must satisfy "
+        "-180 <= MIN <= MAX <= 180."
+    )
 if args_cli.solver_recovery_max_attempts < 0:
     parser.error("--solver_recovery_max_attempts must be >= 0.")
 if args_cli.solver_recovery_stall_steps < 1:
@@ -910,7 +934,7 @@ from isaaclab.assets import RigidObjectCfg
 from isaaclab.managers import EventTermCfg as EventTerm, SceneEntityCfg
 import isaaclab.envs.mdp as event_mdp
 from isaaclab.sensors import CameraCfg
-from isaaclab.utils.math import compute_pose_error, quat_apply
+from isaaclab.utils.math import compute_pose_error, quat_apply, quat_mul
 from isaaclab_tasks.utils import parse_env_cfg
 from pxr import Gf, Sdf, Semantics, UsdGeom, UsdLux
 
@@ -1179,6 +1203,9 @@ class ScenarioSpec:
     start_position_stratum: int | None = None
     start_ee_target: Vec3 | None = None
     start_ee_actual: Vec3 | None = None
+    start_ee_yaw_offset_deg: float | None = None
+    start_ee_yaw_error_deg: float | None = None
+    start_ee_orientation_reached: bool | None = None
     start_ee_tilt_deg: float | None = None
     start_ee_reached: bool | None = None
 
@@ -2033,6 +2060,18 @@ def _generate_blue_tray_scenario_once(
         start_ee_target = sample_partial_progress_start_ee_target(
             augmentation_rng, preplaced_cubes[-1]
         )
+        start_ee_yaw_offset_deg = (
+            round(
+                float(
+                    augmentation_rng.uniform(
+                        *args_cli.partial_progress_start_yaw_range_deg
+                    )
+                ),
+                4,
+            )
+            if start_ee_target is not None
+            else None
+        )
         start_position_stratum = None
         start_pose_mode = (
             "post_placement_retreat" if start_ee_target is not None else "default"
@@ -2041,6 +2080,7 @@ def _generate_blue_tray_scenario_once(
         start_ee_target, start_position_stratum = sample_start_ee_target(
             augmentation_rng, blue_scenario_ordinal
         )
+        start_ee_yaw_offset_deg = None
         start_pose_mode = "random_workspace" if start_ee_target is not None else "default"
     for cube in blue_cubes:
         if not cube.preplaced:
@@ -2076,6 +2116,7 @@ def _generate_blue_tray_scenario_once(
         start_pose_mode=start_pose_mode,
         start_position_stratum=start_position_stratum,
         start_ee_target=start_ee_target,
+        start_ee_yaw_offset_deg=start_ee_yaw_offset_deg,
     )
 
 
@@ -3101,7 +3142,7 @@ def move_to_randomized_start_poses(
     scenarios: list[ScenarioSpec],
     active_count: int,
 ) -> None:
-    """Translate active EEFs to randomized starts before any frame is recorded."""
+    """Move active EEFs to randomized starts before any frame is recorded."""
     selected = [
         (env_id, scenario)
         for env_id, scenario in enumerate(scenarios[:active_count])
@@ -3120,8 +3161,9 @@ def move_to_randomized_start_poses(
         )
         for env_id, scenario in selected
     }
+    target_quat_by_env: dict[int, torch.Tensor] = {}
     max_tilt = float(args_cli.start_pose_max_tilt_deg)
-    for env_id, _ in selected:
+    for env_id, scenario in selected:
         _, ee_quat = read_ee_pose_env(env, env_id)
         initial_tilt = tool_down_tilt_deg_xyzw(ee_quat)
         if initial_tilt > max_tilt:
@@ -3129,6 +3171,34 @@ def move_to_randomized_start_poses(
                 f"env {env_id} initial tool tilt {initial_tilt:.2f} deg exceeds "
                 f"the floor-facing limit {max_tilt:.2f} deg"
             )
+        yaw_offset_rad = math.radians(
+            float(scenario.start_ee_yaw_offset_deg or 0.0)
+        )
+        yaw_delta = torch.tensor(
+            yaw_quat_xyzw(yaw_offset_rad),
+            device=env.device,
+            dtype=torch.float32,
+        )
+        target_quat_by_env[env_id] = quat_mul(
+            yaw_delta.unsqueeze(0), ee_quat.unsqueeze(0)
+        )[0]
+
+    def orientation_error(
+        ee_pos: torch.Tensor,
+        ee_quat: torch.Tensor,
+        target_quat: torch.Tensor,
+    ) -> tuple[torch.Tensor, float]:
+        if float(torch.dot(ee_quat, target_quat).item()) < 0.0:
+            target_quat = -target_quat
+        _, axis_angle_error = compute_pose_error(
+            ee_pos.unsqueeze(0),
+            ee_quat.unsqueeze(0),
+            ee_pos.unsqueeze(0),
+            target_quat.unsqueeze(0),
+            rot_error_type="axis_angle",
+        )
+        error = axis_angle_error[0]
+        return error, float(torch.linalg.norm(error).item())
 
     open_action = torch.zeros(
         (env.num_envs, 7), device=env.device, dtype=torch.float32
@@ -3147,13 +3217,29 @@ def move_to_randomized_start_poses(
                 )
             delta = target_by_env[env_id] - ee_pos
             distance = float(torch.linalg.norm(delta).item())
-            if distance <= float(args_cli.start_pose_tolerance):
+            rotation_error, angular_error = orientation_error(
+                ee_pos, ee_quat, target_quat_by_env[env_id]
+            )
+            position_ready = distance <= float(args_cli.start_pose_tolerance)
+            orientation_ready = angular_error <= float(
+                args_cli.auto_pick_yaw_tolerance
+            )
+            if position_ready and orientation_ready:
                 reached.add(env_id)
                 continue
             reached.discard(env_id)
-            max_step = float(args_cli.start_pose_step)
-            step = delta if distance <= max_step else delta / distance * max_step
-            action[env_id, 0:3] = step
+            if not position_ready:
+                max_step = float(args_cli.start_pose_step)
+                step = delta if distance <= max_step else delta / distance * max_step
+                action[env_id, 0:3] = step
+            if not orientation_ready:
+                max_yaw_step = float(args_cli.auto_pick_yaw_step)
+                rotation_step = (
+                    rotation_error
+                    if angular_error <= max_yaw_step
+                    else rotation_error / angular_error * max_yaw_step
+                )
+                action[env_id, 3:6] = rotation_step
         if len(reached) == len(selected):
             break
         env.step(action)
@@ -3165,15 +3251,27 @@ def move_to_randomized_start_poses(
         ee_pos, ee_quat = read_ee_pose_env(env, env_id)
         final_tilt = tool_down_tilt_deg_xyzw(ee_quat)
         distance = float(torch.linalg.norm(target_by_env[env_id] - ee_pos).item())
+        _, angular_error = orientation_error(
+            ee_pos, ee_quat, target_quat_by_env[env_id]
+        )
         scenario.start_ee_actual = tuple(
             round(float(value), 6) for value in tensor_to_numpy(ee_pos).tolist()
         )  # type: ignore[assignment]
+        scenario.start_ee_yaw_error_deg = round(math.degrees(angular_error), 4)
+        scenario.start_ee_orientation_reached = angular_error <= float(
+            args_cli.auto_pick_yaw_tolerance
+        )
         scenario.start_ee_tilt_deg = round(final_tilt, 4)
-        scenario.start_ee_reached = distance <= float(args_cli.start_pose_tolerance)
+        scenario.start_ee_reached = (
+            distance <= float(args_cli.start_pose_tolerance)
+            and scenario.start_ee_orientation_reached
+        )
         status = "reached" if scenario.start_ee_reached else "timeout"
         print(
             f"[START-AUG] env={env_id} {status} target={scenario.start_ee_target} "
             f"actual={scenario.start_ee_actual} error={distance:.4f}m "
+            f"yaw_offset={scenario.start_ee_yaw_offset_deg or 0.0:.2f}deg "
+            f"yaw_error={scenario.start_ee_yaw_error_deg:.2f}deg "
             f"tool_down_tilt={final_tilt:.2f}deg"
         )
         if final_tilt > max_tilt:
@@ -4559,6 +4657,7 @@ def run_layout_validation_only() -> None:
     blue_strata: dict[int, list[int]] = {}
     first_blue_strata: dict[int, list[int]] = {}
     start_position_strata: dict[int, list[int]] = {}
+    partial_start_yaw_offsets: list[float] = []
     trajectory_mode_counts: dict[str, int] = {}
     for offset in range(count):
         scenario = generate_blue_tray_scenario(
@@ -4589,6 +4688,10 @@ def run_layout_validation_only() -> None:
         if scenario.start_position_stratum is not None:
             start_position_strata.setdefault(blue_count, []).append(
                 int(scenario.start_position_stratum)
+            )
+        if scenario.start_ee_yaw_offset_deg is not None:
+            partial_start_yaw_offsets.append(
+                float(scenario.start_ee_yaw_offset_deg)
             )
         for cube in loose_cubes:
             trajectory_mode_counts[cube.trajectory_mode] = (
@@ -4660,6 +4763,18 @@ def run_layout_validation_only() -> None:
                     int(value) for value in args_cli.start_workspace_bins
                 ],
                 "start_position_coverage": start_coverage,
+                "partial_progress_start_yaw_deg": {
+                    "samples": len(partial_start_yaw_offsets),
+                    "min": min(partial_start_yaw_offsets)
+                    if partial_start_yaw_offsets
+                    else None,
+                    "max": max(partial_start_yaw_offsets)
+                    if partial_start_yaw_offsets
+                    else None,
+                    "mean": float(np.mean(partial_start_yaw_offsets))
+                    if partial_start_yaw_offsets
+                    else None,
+                },
                 "trajectory_mode_counts": trajectory_mode_counts,
                 "tray_overlap_count": 0,
             },
