@@ -91,7 +91,7 @@ Other:
 Fixed task settings:
   Maximum two blue cubes, sampled 25/75%; 2-cube partial progress 30%.
   Starts use stratified X/Y/Z workspace coverage. Target approach paths are
-  direct 65%, safe transit 25%, and near-cube recovery 10%. Solver recovery is
+  direct 90% and pre-grasp near-cube recovery 10%. Solver recovery is
   limited to one retry. Arena evaluates 1/2-cube tasks from the fixed default
   robot pose while executing 16 actions at 15 Hz.
 EOF
@@ -202,7 +202,7 @@ Resolved final Franka pipeline
   LeRobot dataset    : ${LEROBOT_DATASET}
   generation         : ${GENERATION_EPISODES} attempts, seed ${GENERATION_SEED}, 8 GPUs x 4 envs
   scenario mix       : 1c=25%; 2c=75%; 2c one-preplaced=30%
-  trajectory mix     : direct=65%; transit=25%; near-cube recovery=10%
+  trajectory mix     : direct=90%; pre-grasp near-cube recovery=10%
   experiment         : ${EXPERIMENT_NAME}
   batch              : ${GLOBAL_BATCH_SIZE} global ($((GLOBAL_BATCH_SIZE / 8)) per GPU)
   steps              : ${MAX_STEPS} (target passes=${TARGET_DATA_PASSES})
@@ -342,9 +342,6 @@ if [ ! -f "${STATE_DIR}/generation.done" ]; then
             --recovery_waypoint_prob 0.10 \
             --recovery_waypoint_radius_range 0.04 0.08 \
             --recovery_waypoint_height_range 0.12 0.18 \
-            --transit_waypoint_prob 0.25 \
-            --transit_waypoint_radius_range 0.12 0.25 \
-            --transit_waypoint_height_range 0.18 0.30 \
             --partial_progress_2_cube_prob 0.30 \
             --partial_progress_start_xy_radius_range 0.0 0.05 \
             --partial_progress_start_clearance_range 0.12 0.20 \

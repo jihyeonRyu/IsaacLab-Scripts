@@ -388,30 +388,6 @@ def add_args() -> argparse.ArgumentParser:
         help="Recovery waypoint height above the target cube center in meters.",
     )
     parser.add_argument(
-        "--transit_waypoint_prob",
-        type=float,
-        default=0.25,
-        help=(
-            "Probability per target of following one safe, high transit waypoint "
-            "before direct approach. Mutually exclusive with recovery augmentation."
-        ),
-    )
-    parser.add_argument(
-        "--transit_waypoint_radius_range",
-        type=float,
-        nargs=2,
-        default=(0.12, 0.25),
-        metavar=("MIN", "MAX"),
-    )
-    parser.add_argument(
-        "--transit_waypoint_height_range",
-        type=float,
-        nargs=2,
-        default=(0.18, 0.30),
-        metavar=("MIN", "MAX"),
-        help="Transit waypoint height above the target cube center in meters.",
-    )
-    parser.add_argument(
         "--partial_progress_2_cube_prob",
         type=float,
         default=0.25,
@@ -822,26 +798,12 @@ if not 0.0 < float(args_cli.start_pose_max_tilt_deg) <= 75.0:
     parser.error("--start_pose_max_tilt_deg must be in (0, 75].")
 if not 0.0 <= float(args_cli.recovery_waypoint_prob) <= 1.0:
     parser.error("--recovery_waypoint_prob must be in [0, 1].")
-if not 0.0 <= float(args_cli.transit_waypoint_prob) <= 1.0:
-    parser.error("--transit_waypoint_prob must be in [0, 1].")
-if (
-    float(args_cli.recovery_waypoint_prob)
-    + float(args_cli.transit_waypoint_prob)
-    > 1.0
-):
-    parser.error("transit and recovery waypoint probabilities must sum to <= 1.")
 recovery_radius_min, recovery_radius_max = map(float, args_cli.recovery_waypoint_radius_range)
 if recovery_radius_min <= 0.0 or recovery_radius_max < recovery_radius_min:
     parser.error("--recovery_waypoint_radius_range must satisfy 0 < MIN <= MAX.")
 recovery_height_min, recovery_height_max = map(float, args_cli.recovery_waypoint_height_range)
 if recovery_height_min < float(args_cli.auto_pick_approach_height) or recovery_height_max < recovery_height_min:
     parser.error("recovery waypoint heights must satisfy approach_height <= MIN <= MAX.")
-transit_radius_min, transit_radius_max = map(float, args_cli.transit_waypoint_radius_range)
-if transit_radius_min <= 0.0 or transit_radius_max < transit_radius_min:
-    parser.error("--transit_waypoint_radius_range must satisfy 0 < MIN <= MAX.")
-transit_height_min, transit_height_max = map(float, args_cli.transit_waypoint_height_range)
-if transit_height_min < float(args_cli.auto_pick_approach_height) or transit_height_max < transit_height_min:
-    parser.error("transit waypoint heights must satisfy approach_height <= MIN <= MAX.")
 for probability_name in (
     "partial_progress_2_cube_prob",
     "partial_progress_3_cube_prob",
@@ -1172,7 +1134,6 @@ class ScenarioObjectSpec:
     dynamic_friction: float = 0.7
     restitution: float = 0.0
     trajectory_mode: str = "direct"
-    transit_waypoint: Vec3 | None = None
     recovery_waypoint: Vec3 | None = None
     position_stratum: int | None = None
     preplaced: bool = False
@@ -1347,26 +1308,11 @@ def sample_radial_waypoint(
 def sample_trajectory_mode(
     rng: np.random.Generator,
     cube: ScenarioObjectSpec,
-) -> tuple[str, Vec3 | None, Vec3 | None]:
-    """Choose one mutually exclusive, successful approach-path family."""
-    sample = float(rng.random())
-    transit_probability = float(args_cli.transit_waypoint_prob)
-    recovery_probability = float(args_cli.recovery_waypoint_prob)
-    if sample < transit_probability:
-        return (
-            "transit",
-            sample_radial_waypoint(
-                rng,
-                cube,
-                args_cli.transit_waypoint_radius_range,
-                args_cli.transit_waypoint_height_range,
-            ),
-            None,
-        )
-    if sample < transit_probability + recovery_probability:
+) -> tuple[str, Vec3 | None]:
+    """Choose a direct path or one short pre-grasp waypoint near the cube."""
+    if float(rng.random()) < float(args_cli.recovery_waypoint_prob):
         return (
             "recovery",
-            None,
             sample_radial_waypoint(
                 rng,
                 cube,
@@ -1374,7 +1320,7 @@ def sample_trajectory_mode(
                 args_cli.recovery_waypoint_height_range,
             ),
         )
-    return "direct", None, None
+    return "direct", None
 
 
 def sample_partial_progress_count(
@@ -1425,7 +1371,6 @@ def preplace_blue_cubes(
         cube.initial_placement_slot = slot_index
         cube.position_stratum = None
         cube.trajectory_mode = "preplaced"
-        cube.transit_waypoint = None
         cube.recovery_waypoint = None
         preplaced.append(cube)
     return preplaced
@@ -2101,7 +2046,6 @@ def _generate_blue_tray_scenario_once(
         if not cube.preplaced:
             (
                 cube.trajectory_mode,
-                cube.transit_waypoint,
                 cube.recovery_waypoint,
             ) = sample_trajectory_mode(augmentation_rng, cube)
 
@@ -3244,17 +3188,14 @@ class AutoPickPlaceController:
 
     SOLVER_RECOVERABLE_STATES = frozenset(
         {
-            "transit_waypoint",
             "recovery_waypoint",
             "approach",
             "align_yaw",
             "recenter_after_yaw",
             "descend",
-            "move_above_slot",
-            "place_descend",
         }
     )
-    SOLVER_HOLDING_STATES = frozenset({"move_above_slot", "place_descend"})
+    TRANSPORT_STATES = frozenset({"move_above_slot", "place_descend"})
 
     def __init__(self, scenario: ScenarioSpec | None, env_id: int = 0):
         self.scenario = scenario
@@ -3272,8 +3213,6 @@ class AutoPickPlaceController:
         self.retry_count = 0
         self.yaw_response_sign = 1.0
         self.yaw_probe_start: float | None = None
-        self.transit_waypoint: torch.Tensor | None = None
-        self.transit_completed = False
         self.recovery_waypoint: torch.Tensor | None = None
         self.recovery_completed = False
         self.solver_recovery_attempts = 0
@@ -3304,8 +3243,6 @@ class AutoPickPlaceController:
                     if self.current_spec is not None
                     else None
                 ),
-                "transit_augmented": self.transit_waypoint is not None,
-                "transit_completed": self.transit_completed,
                 "recovery_augmented": self.recovery_waypoint is not None,
                 "recovery_completed": self.recovery_completed,
                 "solver_recovery_attempts": self.solver_recovery_attempts,
@@ -3396,12 +3333,6 @@ class AutoPickPlaceController:
         self.solver_recovery_return_state = None
         self.solver_recovery_raise_target = None
         self.solver_recovery_center_target = None
-        self.transit_waypoint = (
-            torch.tensor(cube.transit_waypoint, device=env.device, dtype=torch.float32)
-            if cube.transit_waypoint is not None
-            else None
-        )
-        self.transit_completed = False
         self.recovery_waypoint = (
             torch.tensor(cube.recovery_waypoint, device=env.device, dtype=torch.float32)
             if cube.recovery_waypoint is not None
@@ -3411,7 +3342,6 @@ class AutoPickPlaceController:
         self._transition(
             "open", target_pos=tensor_to_numpy(pos).tolist(),
             trajectory_mode=cube.trajectory_mode,
-            transit_waypoint=cube.transit_waypoint,
             recovery_waypoint=cube.recovery_waypoint,
         )
         return True
@@ -3525,10 +3455,8 @@ class AutoPickPlaceController:
             return False
 
         self.solver_recovery_attempts += 1
-        self.solver_recovery_holding = stalled_state in self.SOLVER_HOLDING_STATES
-        self.solver_recovery_return_state = (
-            "move_above_slot" if self.solver_recovery_holding else "open"
-        )
+        self.solver_recovery_holding = False
+        self.solver_recovery_return_state = "open"
         if stalled_state == "recovery_waypoint":
             # The deliberate augmentation is single-shot; do not repeat it after
             # an actual IK recovery.
@@ -3698,24 +3626,11 @@ class AutoPickPlaceController:
                     self._transition(return_state)
         elif self.state == "open":
             if self.state_steps >= hold:
-                if self.transit_waypoint is not None and not self.transit_completed:
-                    next_state = "transit_waypoint"
-                elif self.recovery_waypoint is not None and not self.recovery_completed:
+                if self.recovery_waypoint is not None and not self.recovery_completed:
                     next_state = "recovery_waypoint"
                 else:
                     next_state = "approach"
                 self._transition(next_state)
-        elif self.state == "transit_waypoint":
-            assert self.transit_waypoint is not None
-            if self._position_action(
-                action, ee_pos, self.transit_waypoint, float(args_cli.auto_pick_step)
-            ):
-                self.transit_completed = True
-                self._event(
-                    "transit_waypoint_reached",
-                    waypoint=tensor_to_numpy(self.transit_waypoint).tolist(),
-                )
-                self._transition("approach")
         elif self.state == "recovery_waypoint":
             assert self.recovery_waypoint is not None
             if self._position_action(
@@ -3890,6 +3805,20 @@ class AutoPickPlaceController:
                 self.retry_count = 0
                 self._event("cube_placed", placed_label=placed)
                 self._select_next(env)
+        if (
+            self.active
+            and self.state == state_at_start
+            and state_at_start in self.TRANSPORT_STATES
+            and self.steps_without_motion_progress
+            >= int(args_cli.solver_recovery_stall_steps)
+        ):
+            self.failed, self.active, self.state = True, False, "failed"
+            self._event(
+                "sequence_failed",
+                reason="transport_stall",
+                failed_state=state_at_start,
+            )
+            return action
         if (
             self.active
             and self.state == state_at_start
