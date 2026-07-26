@@ -91,7 +91,8 @@ Other:
 Fixed task settings:
   Maximum two blue cubes, sampled 25/75%; 2-cube partial progress 30%.
   Starts use stratified X/Y/Z workspace coverage; 2c1p starts additionally
-  randomize floor-facing gripper yaw in [-45, 45] degrees. Target approach
+  randomize floor-facing gripper yaw in [-45, 45] degrees. Unreachable sampled
+  starts are resolved to safe IK-boundary poses before recording. Target approach
   paths are direct 90% and pre-grasp near-cube recovery 10%. Solver recovery is
   limited to one retry. Arena evaluates 1/2-cube tasks from the fixed default
   robot pose while executing 16 actions at 15 Hz.

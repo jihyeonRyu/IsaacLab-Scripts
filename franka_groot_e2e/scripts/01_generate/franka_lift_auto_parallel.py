@@ -1209,8 +1209,11 @@ class ScenarioSpec:
     remaining_blue_cube_names: list[str] = field(default_factory=list)
     start_pose_mode: str = "random_workspace"
     start_position_stratum: int | None = None
+    start_ee_requested_target: Vec3 | None = None
     start_ee_target: Vec3 | None = None
     start_ee_actual: Vec3 | None = None
+    start_ee_position_fallback: bool | None = None
+    start_ee_position_fallback_shift_m: float | None = None
     start_ee_yaw_requested_deg: float | None = None
     start_ee_yaw_offset_deg: float | None = None
     start_ee_yaw_fallback_scale: float | None = None
@@ -3200,6 +3203,12 @@ def move_to_randomized_start_poses(
         base_quat_by_env[env_id] = ee_quat.detach().clone()
         requested_yaw_by_env[env_id] = requested_yaw
         target_quat_by_env[env_id] = yaw_target(ee_quat, requested_yaw)
+        assert scenario.start_ee_target is not None
+        scenario.start_ee_requested_target = tuple(
+            float(value) for value in scenario.start_ee_target
+        )  # type: ignore[assignment]
+        scenario.start_ee_position_fallback = False
+        scenario.start_ee_position_fallback_shift_m = 0.0
         if scenario.start_ee_yaw_requested_deg is not None:
             scenario.start_ee_yaw_offset_deg = round(requested_yaw, 4)
             scenario.start_ee_yaw_fallback_scale = 1.0
@@ -3261,6 +3270,33 @@ def move_to_randomized_start_poses(
     open_action[:, 6] = float(args_cli.gripper_open_command)
     all_env_ids = {env_id for env_id, _ in selected}
     reached: set[int] = set()
+
+    def adopt_reachable_boundary_pose(env_id: int) -> None:
+        """Use the safe IK boundary pose reached during pre-roll as the target."""
+        scenario = scenario_by_env[env_id]
+        ee_pos, ee_quat = read_ee_pose_env(env, env_id)
+        tilt = tool_down_tilt_deg_xyzw(ee_quat)
+        if tilt > max_tilt:
+            raise RuntimeError(
+                f"env {env_id} cannot adopt start pose with tool tilt "
+                f"{tilt:.2f} deg above limit {max_tilt:.2f} deg"
+            )
+        shift = float(torch.linalg.norm(target_by_env[env_id] - ee_pos).item())
+        applied_target = tuple(
+            round(float(value), 6) for value in tensor_to_numpy(ee_pos).tolist()
+        )
+        target_by_env[env_id] = ee_pos.detach().clone()
+        target_quat_by_env[env_id] = ee_quat.detach().clone()
+        scenario.start_ee_target = applied_target  # type: ignore[assignment]
+        scenario.start_ee_position_fallback = True
+        scenario.start_ee_position_fallback_shift_m = round(shift, 6)
+        print(
+            f"[START-AUG-POS-FALLBACK] env={env_id} "
+            f"requested={scenario.start_ee_requested_target} "
+            f"applied={scenario.start_ee_target} shift={shift:.4f}m "
+            f"tool_down_tilt={tilt:.2f}deg"
+        )
+
     # Some low/side workspace points cannot realize the full sampled yaw due to
     # Franka joint limits. Project only those targets toward the validated base
     # orientation before recording; no fallback motion enters the dataset.
@@ -3292,6 +3328,21 @@ def move_to_randomized_start_poses(
             if reached == all_env_ids:
                 break
             env.step(action)
+        # A full-workspace start has no yaw augmentation to relax. Preserve the
+        # broad requested distribution while adopting the safe IK boundary pose
+        # actually reached, before any recorder is started.
+        if fallback_scale == 1.0:
+            for env_id in sorted(all_env_ids - reached):
+                if scenario_by_env[env_id].start_ee_yaw_requested_deg is None:
+                    adopt_reachable_boundary_pose(env_id)
+                    reached.add(env_id)
+        # If a partial-progress pose is still unresolved after yaw is fully
+        # relaxed, apply the same safe position fallback rather than recording a
+        # target mismatch.
+        if fallback_scale == 0.0:
+            for env_id in sorted(all_env_ids - reached):
+                adopt_reachable_boundary_pose(env_id)
+                reached.add(env_id)
         if reached == all_env_ids:
             break
 
@@ -3322,8 +3373,12 @@ def move_to_randomized_start_poses(
         )
         status = "reached" if scenario.start_ee_reached else "timeout"
         print(
-            f"[START-AUG] env={env_id} {status} target={scenario.start_ee_target} "
+            f"[START-AUG] env={env_id} {status} "
+            f"target_requested={scenario.start_ee_requested_target} "
+            f"target_applied={scenario.start_ee_target} "
             f"actual={scenario.start_ee_actual} error={distance:.4f}m "
+            f"position_fallback={bool(scenario.start_ee_position_fallback)} "
+            f"position_shift={scenario.start_ee_position_fallback_shift_m or 0.0:.4f}m "
             f"yaw_requested={scenario.start_ee_yaw_requested_deg or 0.0:.2f}deg "
             f"yaw_applied={scenario.start_ee_yaw_offset_deg or 0.0:.2f}deg "
             f"yaw_error={scenario.start_ee_yaw_error_deg:.2f}deg "
@@ -3333,6 +3388,11 @@ def move_to_randomized_start_poses(
             raise RuntimeError(
                 f"env {env_id} final tool tilt {final_tilt:.2f} deg exceeds "
                 f"the floor-facing limit {max_tilt:.2f} deg"
+            )
+        if not scenario.start_ee_reached:
+            raise RuntimeError(
+                f"env {env_id} randomized start pose remained unreachable after "
+                "pre-recording fallbacks"
             )
 
 

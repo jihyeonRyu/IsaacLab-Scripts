@@ -48,6 +48,9 @@ class EpisodeTrajectory:
     num_remaining: int
     preplaced_blue_cube_names: list[str]
     start_position_stratum: int | None
+    start_ee_position_fallback: bool | None
+    start_ee_position_fallback_shift_m: float | None
+    start_ee_reached: bool | None
     start_ee_yaw_requested_deg: float | None
     start_ee_yaw_offset_deg: float | None
     start_ee_yaw_fallback_scale: float | None
@@ -280,6 +283,13 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
         )
     completed = bool(result.get("completed"))
     failed = bool(result.get("failed"))
+    if (
+        scenario.get("start_ee_target") is not None
+        and scenario.get("start_ee_reached") is False
+    ):
+        raise ValueError(
+            f"Randomized start pose was not reached in {logs_dir / 'scenario.json'}"
+        )
     failure_reason, failed_state, total_solver_attempts = load_automation_details(
         logs_dir / "automation_events.jsonl", failed
     )
@@ -301,6 +311,21 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
         start_position_stratum=(
             int(scenario["start_position_stratum"])
             if scenario.get("start_position_stratum") is not None
+            else None
+        ),
+        start_ee_position_fallback=(
+            bool(scenario["start_ee_position_fallback"])
+            if scenario.get("start_ee_position_fallback") is not None
+            else None
+        ),
+        start_ee_position_fallback_shift_m=(
+            float(scenario["start_ee_position_fallback_shift_m"])
+            if scenario.get("start_ee_position_fallback_shift_m") is not None
+            else None
+        ),
+        start_ee_reached=(
+            bool(scenario["start_ee_reached"])
+            if scenario.get("start_ee_reached") is not None
             else None
         ),
         start_ee_yaw_requested_deg=(
@@ -381,6 +406,9 @@ def trajectory_metrics(episode: EpisodeTrajectory) -> dict[str, Any]:
         "num_remaining": episode.num_remaining,
         "preplaced_blue_cube_names": ";".join(episode.preplaced_blue_cube_names),
         "start_position_stratum": episode.start_position_stratum,
+        "start_ee_position_fallback": episode.start_ee_position_fallback,
+        "start_ee_position_fallback_shift_m": episode.start_ee_position_fallback_shift_m,
+        "start_ee_reached": episode.start_ee_reached,
         "start_ee_yaw_requested_deg": episode.start_ee_yaw_requested_deg,
         "start_ee_yaw_offset_deg": episode.start_ee_yaw_offset_deg,
         "start_ee_yaw_fallback_scale": episode.start_ee_yaw_fallback_scale,
@@ -1153,6 +1181,30 @@ def main() -> None:
         for episode in episodes
         if episode.start_position_stratum is not None
     )
+    randomized_start_reached = [
+        bool(episode.start_ee_reached)
+        for episode in episodes
+        if episode.start_ee_reached is not None
+    ]
+    position_fallback_shifts = [
+        float(episode.start_ee_position_fallback_shift_m)
+        for episode in episodes
+        if episode.start_ee_position_fallback
+        and episode.start_ee_position_fallback_shift_m is not None
+    ]
+    randomized_start_summary = {
+        "samples": len(randomized_start_reached),
+        "reached": sum(randomized_start_reached),
+        "position_fallback_count": len(position_fallback_shifts),
+        "mean_position_fallback_shift_m": (
+            float(np.mean(position_fallback_shifts))
+            if position_fallback_shifts
+            else None
+        ),
+        "max_position_fallback_shift_m": (
+            max(position_fallback_shifts) if position_fallback_shifts else None
+        ),
+    }
     partial_yaw_requests = [
         float(episode.start_ee_yaw_requested_deg)
         for episode in episodes
@@ -1206,6 +1258,7 @@ def main() -> None:
         "start_position_stratum_counts": {
             str(key): value for key, value in sorted(start_position_stratum_counts.items())
         },
+        "randomized_start_reachability": randomized_start_summary,
         "partial_progress_start_yaw_deg": partial_yaw_summary,
         "failure_analysis": failure_analysis,
         "workspace_coverage": workspace_coverage,
