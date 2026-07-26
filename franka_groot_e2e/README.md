@@ -102,6 +102,15 @@ tail -f /workspace/output/franka_final_pipeline.log
 cat /workspace/output/franka_e2e_pipeline_final/status.log
 ```
 
+To monitor all stages and automatically package, document, commit, and push the
+final evidence after successful completion:
+
+```bash
+nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/monitor_and_finalize.sh \
+  >/dev/null 2>&1 &
+tail -f /workspace/output/franka_final_monitor.log
+```
+
 The launcher is restart-safe at completed stage boundaries and refuses to
 silently overwrite non-empty partial outputs. Its stages are generation,
 analysis, LeRobot conversion, coverage planning, SFT, final EMA attention,
