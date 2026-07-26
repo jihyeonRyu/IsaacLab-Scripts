@@ -1,0 +1,8 @@
+{
+  "checkpoint": "checkpoint-1000",
+  "checkpoint_step": 1000,
+  "episode": 1,
+  "source": "existing W&B local attention cache",
+  "source_path": "/workspace/Isaac-GR00T/wandb/offline-run-20260726_095154-e98bv3oz/files/media/images/attention_probe_0_be10b02c56c8e15a3692.png",
+  "step": 120
+}

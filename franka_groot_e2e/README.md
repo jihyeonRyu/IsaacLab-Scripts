@@ -45,19 +45,14 @@ nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/run_pipeline.sh \
 ```
 
 The restart-safe stages are generation, analysis, LeRobot conversion, coverage
-planning, SFT, final EMA attention, maximum-two-cube Arena evaluation, and
-checkpoint cleanup.
+planning, SFT, final EMA attention, maximum-two-cube Arena evaluation, final
+evidence packaging, and checkpoint cleanup. Progress is written to
+`/workspace/output/franka_e2e_pipeline_final/status.log`.
 
-Attach the automatic monitor/finalizer after starting the pipeline:
-
-```bash
-nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/monitor_and_finalize.sh   >/dev/null 2>&1 &
-```
-
-The watchdog writes `/workspace/output/franka_final_monitor.log`. After a
-verified `complete.done`, it packages the latest analysis, representative
-generation/Arena videos, four EMA attention probes, refreshes this document and
-`/workspace/FRANKA_GROOT_WORKFLOW.md`, then commits and pushes the evidence.
+For individually runnable commands, validation checkpoints, and restart guidance,
+follow [STEP_BY_STEP.md](STEP_BY_STEP.md). SFT uses the maintained Isaac-GR00T
+branch and evaluation uses the maintained IsaacLab-Arena branch; their source is
+not duplicated in this repository.
 
 ## Synthetic generation
 
@@ -127,7 +122,17 @@ Dataset: 1757 successful episodes,
 | EMA | FP32, decay `0.999`, every optimizer step |
 | Runtime | 3h 58m 14s |
 
-Final continuation-aware EMA attention probes:
+Attention probes compare the same four episode/frame samples at the first saved
+training checkpoint and the final EMA checkpoint:
+
+### First saved training checkpoint
+
+- [checkpoint-1000-ep0-step120](assets/attention/checkpoint-1000-ep0-step120.png)
+- [checkpoint-1000-ep1-step120](assets/attention/checkpoint-1000-ep1-step120.png)
+- [checkpoint-1000-ep2-step120](assets/attention/checkpoint-1000-ep2-step120.png)
+- [checkpoint-1000-ep3-step120](assets/attention/checkpoint-1000-ep3-step120.png)
+
+### Final EMA checkpoint
 
 - [final-ema-episode-0-step-120](assets/attention/final-ema-episode-0-step-120.png)
 - [final-ema-episode-1-step-120](assets/attention/final-ema-episode-1-step-120.png)
@@ -144,8 +149,8 @@ actions at 15 Hz before the next inference.
 
 | Task | Success | Failure |
 |---|---|---|
-| 1 cube | [video](assets/arena/1-cube-success-external.mp4) | [video](assets/arena/1-cube-failure-external.mp4) |
-| 2 cubes | [video](assets/arena/2-cubes-success-external.mp4) | [video](assets/arena/2-cubes-failure-external.mp4) |
+| 1 cube | [1](assets/arena/1-cube-success-01-external.mp4) [2](assets/arena/1-cube-success-02-external.mp4) [3](assets/arena/1-cube-success-03-external.mp4) | [1](assets/arena/1-cube-failure-01-external.mp4) [2](assets/arena/1-cube-failure-02-external.mp4) [3](assets/arena/1-cube-failure-03-external.mp4) |
+| 2 cubes | [1](assets/arena/2-cubes-success-01-external.mp4) [2](assets/arena/2-cubes-success-02-external.mp4) [3](assets/arena/2-cubes-success-03-external.mp4) | [1](assets/arena/2-cubes-failure-01-external.mp4) [2](assets/arena/2-cubes-failure-02-external.mp4) [3](assets/arena/2-cubes-failure-03-external.mp4) |
 
 Serve the packaged result:
 

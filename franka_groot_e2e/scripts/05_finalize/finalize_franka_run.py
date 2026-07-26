@@ -20,6 +20,14 @@ VIDEO_PATTERN = re.compile(
 RESULT_PATTERN = re.compile(
     r"^episode_results(?:_rebuild(?P<rebuild>\d+))?(?:_rank\d+)?\.jsonl$"
 )
+CHECKPOINT_ATTENTION_PATTERN = re.compile(
+    r"^checkpoint-(?P<checkpoint>\d+)-ep(?P<episode>\d+)-"
+    r"step(?P<step>\d+)\.png$"
+)
+FINAL_ATTENTION_PATTERN = re.compile(
+    r"^final-ema-episode-(?P<episode>\d+)-step-(?P<step>\d+)\.png$"
+)
+REPRESENTATIVE_COUNT = 3
 TASK_LABELS = {
     "franka_blue_tray_1_cube": "1 blue cube",
     "franka_blue_tray_2_cubes": "2 blue cubes",
@@ -226,29 +234,59 @@ def package_arena(arena_output: Path, destination: Path) -> dict[str, Any]:
             candidates = [
                 item for item in task_records if item[0].get("success") is desired
             ]
-            if not candidates:
-                raise RuntimeError(f"{task}: no {outcome} episode to package")
+            if len(candidates) < REPRESENTATIVE_COUNT:
+                raise RuntimeError(
+                    f"{task}: expected at least {REPRESENTATIVE_COUNT} {outcome} "
+                    f"episodes, found {len(candidates)}"
+                )
             candidates.sort(
                 key=lambda item: (
                     int(item[0].get("episode_length", 0)),
+                    str(item[0].get("_source_results", "")),
+                    int(item[0].get("episode_in_env", 0)),
                     str(item[1]),
                 )
             )
-            record, video_path = candidates[0]
-            output_name = f"{task_slug}-{outcome}-external.mp4"
-            shutil.copy2(video_path, staged / output_name)
-            representatives[output_name] = {
-                key: record.get(key)
-                for key in (
-                    "job_name",
-                    "success",
-                    "seed",
-                    "env_id",
-                    "episode_in_env",
-                    "episode_length",
-                    "_source_results",
+            chosen: list[tuple[dict[str, Any], Path]] = []
+            seen_ranks: set[str] = set()
+            for item in candidates:
+                rank = str(item[0].get("_source_results", "")).split("/", 1)[0]
+                if rank in seen_ranks:
+                    continue
+                chosen.append(item)
+                seen_ranks.add(rank)
+                if len(chosen) == REPRESENTATIVE_COUNT:
+                    break
+            if len(chosen) < REPRESENTATIVE_COUNT:
+                chosen_paths = {path for _, path in chosen}
+                for item in candidates:
+                    if item[1] in chosen_paths:
+                        continue
+                    chosen.append(item)
+                    chosen_paths.add(item[1])
+                    if len(chosen) == REPRESENTATIVE_COUNT:
+                        break
+            if len(chosen) != REPRESENTATIVE_COUNT:
+                raise RuntimeError(
+                    f"{task}: selected {len(chosen)} {outcome} representatives"
                 )
-            }
+            for index, (record, video_path) in enumerate(chosen, start=1):
+                output_name = (
+                    f"{task_slug}-{outcome}-{index:02d}-external.mp4"
+                )
+                shutil.copy2(video_path, staged / output_name)
+                representatives[output_name] = {
+                    key: record.get(key)
+                    for key in (
+                        "job_name",
+                        "success",
+                        "seed",
+                        "env_id",
+                        "episode_in_env",
+                        "episode_length",
+                        "_source_results",
+                    )
+                }
     (staged / "representative_episodes.json").write_text(
         json.dumps(representatives, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -268,15 +306,23 @@ def arena_index_html(summary: dict[str, dict[str, int | float]]) -> str:
     for task, label in TASK_LABELS.items():
         result = summary[task]
         slug = "1-cube" if task.endswith("_1_cube") else "2-cubes"
+        success_videos = "".join(
+            f"<video controls muted preload='metadata' "
+            f"src='{slug}-success-{index:02d}-external.mp4'></video>"
+            for index in range(1, REPRESENTATIVE_COUNT + 1)
+        )
+        failure_videos = "".join(
+            f"<video controls muted preload='metadata' "
+            f"src='{slug}-failure-{index:02d}-external.mp4'></video>"
+            for index in range(1, REPRESENTATIVE_COUNT + 1)
+        )
         rows.append(
             "<tr>"
             f"<th>{html.escape(label)}</th>"
             f"<td>{result['successes']}/{result['episodes']} "
             f"({100.0 * float(result['success_rate']):.1f}%)</td>"
-            f"<td><video controls muted preload='metadata' "
-            f"src='{slug}-success-external.mp4'></video></td>"
-            f"<td><video controls muted preload='metadata' "
-            f"src='{slug}-failure-external.mp4'></video></td>"
+            f"<td><div class='videos'>{success_videos}</div></td>"
+            f"<td><div class='videos'>{failure_videos}</div></td>"
             "</tr>"
         )
     return f"""<!doctype html>
@@ -286,7 +332,7 @@ def arena_index_html(summary: dict[str, dict[str, int | float]]) -> str:
 <style>
 body{{font:16px system-ui;margin:2rem;background:#111;color:#eee}}
 table{{border-collapse:collapse;width:100%}}th,td{{border:1px solid #555;padding:.7rem}}
-video{{width:min(38vw,520px)}}a{{color:#8cf}}
+video{{width:min(26vw,360px)}}.videos{{display:grid;gap:.6rem}}a{{color:#8cf}}
 </style></head><body>
 <h1>Franka GR00T — fixed-default-pose Arena evaluation</h1>
 <table><thead><tr><th>Task</th><th>Result</th><th>Success</th><th>Failure</th></tr></thead>
@@ -299,17 +345,53 @@ video{{width:min(38vw,520px)}}a{{color:#8cf}}
 
 
 def package_attention(attention_dir: Path, destination: Path) -> list[str]:
-    pngs = sorted(attention_dir.glob("final-ema-episode-*-step-120.png"))
-    if len(pngs) != 4:
-        raise RuntimeError(f"Expected four final EMA attention PNGs, found {len(pngs)}")
+    checkpoint_groups: dict[int, list[tuple[int, int, Path]]] = {}
+    for png in attention_dir.glob("checkpoint-*-ep*-step*.png"):
+        match = CHECKPOINT_ATTENTION_PATTERN.match(png.name)
+        if match is None:
+            continue
+        checkpoint_step = int(match.group("checkpoint"))
+        episode = int(match.group("episode"))
+        frame_step = int(match.group("step"))
+        require_file(png.with_suffix(".json"))
+        checkpoint_groups.setdefault(checkpoint_step, []).append(
+            (episode, frame_step, png)
+        )
+    valid_first_steps = sorted(
+        step for step, probes in checkpoint_groups.items() if len(probes) == 4
+    )
+    if not valid_first_steps:
+        raise RuntimeError("No complete four-sample checkpoint attention set found")
+    first_step = valid_first_steps[0]
+    first_probes = checkpoint_groups[first_step]
+
+    final_probes: list[tuple[int, int, Path]] = []
+    for png in attention_dir.glob("final-ema-episode-*-step-*.png"):
+        match = FINAL_ATTENTION_PATTERN.match(png.name)
+        if match is None:
+            continue
+        episode = int(match.group("episode"))
+        frame_step = int(match.group("step"))
+        require_file(png.with_suffix(".json"))
+        final_probes.append((episode, frame_step, png))
+    if len(final_probes) != 4:
+        raise RuntimeError(
+            f"Expected four final EMA attention probes, found {len(final_probes)}"
+        )
+    first_samples = {(episode, frame_step) for episode, frame_step, _ in first_probes}
+    final_samples = {(episode, frame_step) for episode, frame_step, _ in final_probes}
+    if first_samples != final_samples:
+        raise RuntimeError(
+            f"First/final attention samples differ: {first_samples} vs {final_samples}"
+        )
+
     staged = destination.with_name(f".{destination.name}.staged")
     if staged.exists():
         shutil.rmtree(staged)
     staged.mkdir(parents=True)
     names = []
-    for png in pngs:
+    for _, _, png in sorted(first_probes) + sorted(final_probes):
         metadata = png.with_suffix(".json")
-        require_file(metadata)
         shutil.copy2(png, staged / png.name)
         shutil.copy2(metadata, staged / metadata.name)
         names.append(png.name)
@@ -393,10 +475,26 @@ def render_readme(
         default="n/a",
     )
     training_runtime_text = training_runtime or "recorded in pipeline status log"
-    attention_lines = "\n".join(
-        f"- [{name.removesuffix('.png')}](assets/attention/{name})"
-        for name in attention_names
-    )
+    attention_groups = []
+    for prefix, title in (
+        ("checkpoint-", "First saved training checkpoint"),
+        ("final-ema-", "Final EMA checkpoint"),
+    ):
+        names = [name for name in attention_names if name.startswith(prefix)]
+        if len(names) != 4:
+            raise RuntimeError(f"Expected four {title} probes, found {names}")
+        links = "\n".join(
+            f"- [{name.removesuffix('.png')}](assets/attention/{name})"
+            for name in names
+        )
+        attention_groups.append(f"### {title}\n\n{links}")
+    attention_lines = "\n\n".join(attention_groups)
+
+    def arena_video_links(task_slug: str, outcome: str) -> str:
+        return " ".join(
+            f"[{index}](assets/arena/{task_slug}-{outcome}-{index:02d}-external.mp4)"
+            for index in range(1, REPRESENTATIVE_COUNT + 1)
+        )
     return f"""# Franka synthetic data → GR00T → IsaacLab-Arena
 
 This is the reproducible maximum-two-blue-cube workflow for Franka synthetic
@@ -444,20 +542,14 @@ nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/run_pipeline.sh \\
 ```
 
 The restart-safe stages are generation, analysis, LeRobot conversion, coverage
-planning, SFT, final EMA attention, maximum-two-cube Arena evaluation, and
-checkpoint cleanup.
+planning, SFT, final EMA attention, maximum-two-cube Arena evaluation, final
+evidence packaging, and checkpoint cleanup. Progress is written to
+`/workspace/output/franka_e2e_pipeline_final/status.log`.
 
-Attach the automatic monitor/finalizer after starting the pipeline:
-
-```bash
-nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/monitor_and_finalize.sh \
-  >/dev/null 2>&1 &
-```
-
-The watchdog writes `/workspace/output/franka_final_monitor.log`. After a
-verified `complete.done`, it packages the latest analysis, representative
-generation/Arena videos, four EMA attention probes, refreshes this document and
-`/workspace/FRANKA_GROOT_WORKFLOW.md`, then commits and pushes the evidence.
+For individually runnable commands, validation checkpoints, and restart guidance,
+follow [STEP_BY_STEP.md](STEP_BY_STEP.md). SFT uses the maintained Isaac-GR00T
+branch and evaluation uses the maintained IsaacLab-Arena branch; their source is
+not duplicated in this repository.
 
 ## Synthetic generation
 
@@ -527,7 +619,8 @@ Dataset: {dataset_info['total_episodes']} successful episodes,
 | EMA | FP32, decay `0.999`, every optimizer step |
 | Runtime | {training_runtime_text} |
 
-Final continuation-aware EMA attention probes:
+Attention probes compare the same four episode/frame samples at the first saved
+training checkpoint and the final EMA checkpoint:
 
 {attention_lines}
 
@@ -541,8 +634,8 @@ actions at 15 Hz before the next inference.
 
 | Task | Success | Failure |
 |---|---|---|
-| 1 cube | [video](assets/arena/1-cube-success-external.mp4) | [video](assets/arena/1-cube-failure-external.mp4) |
-| 2 cubes | [video](assets/arena/2-cubes-success-external.mp4) | [video](assets/arena/2-cubes-failure-external.mp4) |
+| 1 cube | {arena_video_links("1-cube", "success")} | {arena_video_links("1-cube", "failure")} |
+| 2 cubes | {arena_video_links("2-cubes", "success")} | {arena_video_links("2-cubes", "failure")} |
 
 Serve the packaged result:
 
@@ -590,7 +683,6 @@ def main() -> None:
         args.state_dir or workspace / "output/franka_e2e_pipeline_final"
     ).resolve()
 
-    require_file(state_dir / "complete.done")
     analysis_dir = raw_dataset / "trajectory_analysis"
     analysis = read_json(analysis_dir / "scenario_summary.json")
     dataset_info = read_json(lerobot_dataset / "meta/info.json")
@@ -606,6 +698,10 @@ def main() -> None:
     arena_summary = package_arena(arena_output, assets / "arena")
 
     training_runtime = stage_duration(
+        state_dir / "status.log",
+        "starting 8-GPU SFT with EMA",
+        "rendering final EMA attention for the same four checkpoint probes",
+    ) or stage_duration(
         state_dir / "status.log",
         "starting 8-GPU SFT with EMA",
         "rendering four continuation-aware final EMA attention samples",
@@ -635,8 +731,8 @@ def main() -> None:
         "|---|---|\n"
         "| Generation | two representative 2-cube success videos |\n"
         "| Analysis | trajectory, workspace, progress, and failure plots plus CSV/JSON |\n"
-        "| SFT | four final-EMA attention probes |\n"
-        "| Arena | summary and success/failure video for each 1/2-cube task |\n\n"
+        "| SFT | first-checkpoint vs final-EMA attention (four matched samples each) |\n"
+        "| Arena | summary plus three success and three failure videos per task |\n\n"
         f"Fixed-default-pose Arena: **2 cubes {two['successes']}/100 "
         f"({100.0 * float(two['success_rate']):.1f}%)**; "
         f"1 cube {one['successes']}/100 "
@@ -646,7 +742,10 @@ def main() -> None:
     workflow = (
         "# Franka GR00T workflow\n\n"
         "The maintained customer-facing workflow is:\n\n"
-        "- `/workspace/IsaacLab-Scripts/franka_groot_e2e/README.md`\n"
+        "- overview and one-command run: "
+        "`/workspace/IsaacLab-Scripts/franka_groot_e2e/README.md`\n"
+        "- step-by-step runbook: "
+        "`/workspace/IsaacLab-Scripts/franka_groot_e2e/STEP_BY_STEP.md`\n"
         "- repository: `jihyeonRyu/IsaacLab-Scripts`, branch `main`\n\n"
         "## Latest validated scope\n\n"
         "Maximum two blue cubes; fixed default Franka evaluation start; eight GPUs; "

@@ -50,7 +50,8 @@ PRINT_CONFIG=0
 usage() {
     cat <<'EOF'
 Run the final Franka pipeline:
-  8-GPU generation -> analysis -> LeRobot -> 8-GPU GR00T SFT+EMA -> Arena.
+  8-GPU generation -> analysis -> LeRobot -> 8-GPU GR00T SFT+EMA -> Arena
+  -> validated customer evidence and documentation.
 
 Usage:
   run_pipeline.sh [options]
@@ -487,6 +488,8 @@ if [ ! -f "${STATE_DIR}/sft.done" ]; then
         exit 2
     fi
     status "starting 8-GPU SFT with EMA"
+    rm -rf -- "${ATTENTION_DIR}"
+    mkdir -p "${ATTENTION_DIR}"
     DATASET_PATH="${LEROBOT_DATASET}" \
     VENV_PATH="${GROOT_REPO}/.venv" \
     BASE_MODEL_PATH="${BASE_MODEL_PATH}" \
@@ -528,9 +531,14 @@ fi
 
 CURRENT_STAGE="ema_attention"
 if [ ! -f "${STATE_DIR}/ema_attention.done" ]; then
-    status "rendering four continuation-aware final EMA attention samples"
-    rm -rf -- "${ATTENTION_DIR}"
+    status "rendering final EMA attention for the same four checkpoint probes"
     mkdir -p "${ATTENTION_DIR}"
+    first_attention_count="$(find "${ATTENTION_DIR}" -maxdepth 1 -type f \
+        -name "checkpoint-${SAVE_STEPS}-ep*-step120.png" | wc -l)"
+    if [ "${first_attention_count}" -ne 4 ]; then
+        echo "Expected four checkpoint-${SAVE_STEPS} attention images, found ${first_attention_count}" >&2
+        exit 2
+    fi
     for episode in ${DEBUG_VIS_EPISODES}; do
         output="${ATTENTION_DIR}/final-ema-episode-${episode}-step-120.png"
         WANDB_MODE=offline "${GROOT_PYTHON}" \
@@ -585,6 +593,28 @@ print(json.dumps(summary, indent=2))
 PY
     test -f "${EVAL_OUTPUT}/index.html"
     mark_done arena_eval
+fi
+
+CURRENT_STAGE="finalization"
+if [ ! -f "${STATE_DIR}/finalization.done" ]; then
+    status "packaging validated customer evidence and documentation"
+    python3 \
+        "${SCRIPTS_REPO}/franka_groot_e2e/scripts/05_finalize/finalize_franka_run.py" \
+        --workspace-root "${WORKSPACE_ROOT}" \
+        --scripts-repo "${SCRIPTS_REPO}" \
+        --raw-dataset "${RAW_DATASET}" \
+        --lerobot-dataset "${LEROBOT_DATASET}" \
+        --run-dir "${RUN_DIR}" \
+        --checkpoint "${CHECKPOINT}" \
+        --attention-dir "${ATTENTION_DIR}" \
+        --arena-output "${EVAL_OUTPUT}" \
+        --state-dir "${STATE_DIR}" \
+        --experiment-name "${EXPERIMENT_NAME}" \
+        --generation-attempts "${GENERATION_EPISODES}" \
+        --generation-seed "${GENERATION_SEED}" \
+        --global-batch-size "${GLOBAL_BATCH_SIZE}"
+    test -f "${SCRIPTS_REPO}/franka_groot_e2e/assets/arena/summary.json"
+    test -f "${SCRIPTS_REPO}/franka_groot_e2e/README.md"
 fi
 
 CURRENT_STAGE="cleanup"
