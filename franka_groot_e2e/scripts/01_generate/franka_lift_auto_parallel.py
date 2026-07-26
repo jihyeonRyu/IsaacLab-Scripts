@@ -359,6 +359,12 @@ def add_args() -> argparse.ArgumentParser:
     )
     parser.add_argument("--start_pose_step", type=float, default=0.03)
     parser.add_argument("--start_pose_tolerance", type=float, default=0.012)
+    parser.add_argument(
+        "--start_pose_yaw_tolerance_deg",
+        type=float,
+        default=2.5,
+        help="Yaw error accepted for randomized start-pose pre-roll.",
+    )
     parser.add_argument("--start_pose_timeout_steps", type=int, default=480)
     parser.add_argument("--start_pose_hold_steps", type=int, default=12)
     parser.add_argument(
@@ -426,7 +432,7 @@ def add_args() -> argparse.ArgumentParser:
         "--partial_progress_start_yaw_range_deg",
         type=float,
         nargs=2,
-        default=(-90.0, 90.0),
+        default=(-45.0, 45.0),
         metavar=("MIN", "MAX"),
         help=(
             "World-Z yaw offset range for partial-progress starts. "
@@ -808,6 +814,8 @@ if args_cli.start_pose_timeout_steps < 1 or args_cli.start_pose_hold_steps < 0:
     parser.error("start pose timeout must be >= 1 and hold steps must be >= 0.")
 if not 0.0 < float(args_cli.start_pose_max_tilt_deg) <= 75.0:
     parser.error("--start_pose_max_tilt_deg must be in (0, 75].")
+if not 0.0 < float(args_cli.start_pose_yaw_tolerance_deg) <= 10.0:
+    parser.error("--start_pose_yaw_tolerance_deg must be in (0, 10].")
 if not 0.0 <= float(args_cli.recovery_waypoint_prob) <= 1.0:
     parser.error("--recovery_waypoint_prob must be in [0, 1].")
 recovery_radius_min, recovery_radius_max = map(float, args_cli.recovery_waypoint_radius_range)
@@ -1203,7 +1211,9 @@ class ScenarioSpec:
     start_position_stratum: int | None = None
     start_ee_target: Vec3 | None = None
     start_ee_actual: Vec3 | None = None
+    start_ee_yaw_requested_deg: float | None = None
     start_ee_yaw_offset_deg: float | None = None
+    start_ee_yaw_fallback_scale: float | None = None
     start_ee_yaw_error_deg: float | None = None
     start_ee_orientation_reached: bool | None = None
     start_ee_tilt_deg: float | None = None
@@ -2060,7 +2070,7 @@ def _generate_blue_tray_scenario_once(
         start_ee_target = sample_partial_progress_start_ee_target(
             augmentation_rng, preplaced_cubes[-1]
         )
-        start_ee_yaw_offset_deg = (
+        start_ee_yaw_requested_deg = (
             round(
                 float(
                     augmentation_rng.uniform(
@@ -2072,6 +2082,7 @@ def _generate_blue_tray_scenario_once(
             if start_ee_target is not None
             else None
         )
+        start_ee_yaw_offset_deg = start_ee_yaw_requested_deg
         start_position_stratum = None
         start_pose_mode = (
             "post_placement_retreat" if start_ee_target is not None else "default"
@@ -2080,6 +2091,7 @@ def _generate_blue_tray_scenario_once(
         start_ee_target, start_position_stratum = sample_start_ee_target(
             augmentation_rng, blue_scenario_ordinal
         )
+        start_ee_yaw_requested_deg = None
         start_ee_yaw_offset_deg = None
         start_pose_mode = "random_workspace" if start_ee_target is not None else "default"
     for cube in blue_cubes:
@@ -2116,6 +2128,7 @@ def _generate_blue_tray_scenario_once(
         start_pose_mode=start_pose_mode,
         start_position_stratum=start_position_stratum,
         start_ee_target=start_ee_target,
+        start_ee_yaw_requested_deg=start_ee_yaw_requested_deg,
         start_ee_yaw_offset_deg=start_ee_yaw_offset_deg,
     )
 
@@ -3142,7 +3155,7 @@ def move_to_randomized_start_poses(
     scenarios: list[ScenarioSpec],
     active_count: int,
 ) -> None:
-    """Move active EEFs to randomized starts before any frame is recorded."""
+    """Move active EEFs to reachable randomized starts before recording."""
     selected = [
         (env_id, scenario)
         for env_id, scenario in enumerate(scenarios[:active_count])
@@ -3161,8 +3174,20 @@ def move_to_randomized_start_poses(
         )
         for env_id, scenario in selected
     }
+    base_quat_by_env: dict[int, torch.Tensor] = {}
     target_quat_by_env: dict[int, torch.Tensor] = {}
+    requested_yaw_by_env: dict[int, float] = {}
+    scenario_by_env = {env_id: scenario for env_id, scenario in selected}
     max_tilt = float(args_cli.start_pose_max_tilt_deg)
+
+    def yaw_target(base_quat: torch.Tensor, yaw_offset_deg: float) -> torch.Tensor:
+        yaw_delta = torch.tensor(
+            yaw_quat_xyzw(math.radians(yaw_offset_deg)),
+            device=env.device,
+            dtype=torch.float32,
+        )
+        return quat_mul(yaw_delta.unsqueeze(0), base_quat.unsqueeze(0))[0]
+
     for env_id, scenario in selected:
         _, ee_quat = read_ee_pose_env(env, env_id)
         initial_tilt = tool_down_tilt_deg_xyzw(ee_quat)
@@ -3171,17 +3196,13 @@ def move_to_randomized_start_poses(
                 f"env {env_id} initial tool tilt {initial_tilt:.2f} deg exceeds "
                 f"the floor-facing limit {max_tilt:.2f} deg"
             )
-        yaw_offset_rad = math.radians(
-            float(scenario.start_ee_yaw_offset_deg or 0.0)
-        )
-        yaw_delta = torch.tensor(
-            yaw_quat_xyzw(yaw_offset_rad),
-            device=env.device,
-            dtype=torch.float32,
-        )
-        target_quat_by_env[env_id] = quat_mul(
-            yaw_delta.unsqueeze(0), ee_quat.unsqueeze(0)
-        )[0]
+        requested_yaw = float(scenario.start_ee_yaw_requested_deg or 0.0)
+        base_quat_by_env[env_id] = ee_quat.detach().clone()
+        requested_yaw_by_env[env_id] = requested_yaw
+        target_quat_by_env[env_id] = yaw_target(ee_quat, requested_yaw)
+        if scenario.start_ee_yaw_requested_deg is not None:
+            scenario.start_ee_yaw_offset_deg = round(requested_yaw, 4)
+            scenario.start_ee_yaw_fallback_scale = 1.0
 
     def orientation_error(
         ee_pos: torch.Tensor,
@@ -3200,52 +3221,85 @@ def move_to_randomized_start_poses(
         error = axis_angle_error[0]
         return error, float(torch.linalg.norm(error).item())
 
+    def target_action_and_ready(
+        env_id: int,
+        action: torch.Tensor,
+    ) -> bool:
+        ee_pos, ee_quat = read_ee_pose_env(env, env_id)
+        tilt = tool_down_tilt_deg_xyzw(ee_quat)
+        if tilt > max_tilt:
+            raise RuntimeError(
+                f"env {env_id} tool tilt {tilt:.2f} deg exceeded the "
+                f"floor-facing limit {max_tilt:.2f} deg during start pre-roll"
+            )
+        delta = target_by_env[env_id] - ee_pos
+        distance = float(torch.linalg.norm(delta).item())
+        rotation_error, angular_error = orientation_error(
+            ee_pos, ee_quat, target_quat_by_env[env_id]
+        )
+        position_ready = distance <= float(args_cli.start_pose_tolerance)
+        orientation_ready = angular_error <= math.radians(
+            float(args_cli.start_pose_yaw_tolerance_deg)
+        )
+        if not position_ready:
+            max_step = float(args_cli.start_pose_step)
+            step = delta if distance <= max_step else delta / distance * max_step
+            action[env_id, 0:3] = step
+        if not orientation_ready:
+            max_yaw_step = float(args_cli.auto_pick_yaw_step)
+            rotation_step = (
+                rotation_error
+                if angular_error <= max_yaw_step
+                else rotation_error / angular_error * max_yaw_step
+            )
+            action[env_id, 3:6] = rotation_step
+        return position_ready and orientation_ready
+
     open_action = torch.zeros(
         (env.num_envs, 7), device=env.device, dtype=torch.float32
     )
     open_action[:, 6] = float(args_cli.gripper_open_command)
+    all_env_ids = {env_id for env_id, _ in selected}
     reached: set[int] = set()
-    for _ in range(int(args_cli.start_pose_timeout_steps)):
-        action = open_action.clone()
-        for env_id, _ in selected:
-            ee_pos, ee_quat = read_ee_pose_env(env, env_id)
-            tilt = tool_down_tilt_deg_xyzw(ee_quat)
-            if tilt > max_tilt:
-                raise RuntimeError(
-                    f"env {env_id} tool tilt {tilt:.2f} deg exceeded the "
-                    f"floor-facing limit {max_tilt:.2f} deg during start pre-roll"
+    # Some low/side workspace points cannot realize the full sampled yaw due to
+    # Franka joint limits. Project only those targets toward the validated base
+    # orientation before recording; no fallback motion enters the dataset.
+    for fallback_scale in (1.0, 0.5, 0.0):
+        unresolved = all_env_ids - reached
+        if fallback_scale < 1.0:
+            for env_id in sorted(unresolved):
+                scenario = scenario_by_env[env_id]
+                applied_yaw = requested_yaw_by_env[env_id] * fallback_scale
+                target_quat_by_env[env_id] = yaw_target(
+                    base_quat_by_env[env_id], applied_yaw
                 )
-            delta = target_by_env[env_id] - ee_pos
-            distance = float(torch.linalg.norm(delta).item())
-            rotation_error, angular_error = orientation_error(
-                ee_pos, ee_quat, target_quat_by_env[env_id]
-            )
-            position_ready = distance <= float(args_cli.start_pose_tolerance)
-            orientation_ready = angular_error <= float(
-                args_cli.auto_pick_yaw_tolerance
-            )
-            if position_ready and orientation_ready:
-                reached.add(env_id)
-                continue
-            reached.discard(env_id)
-            if not position_ready:
-                max_step = float(args_cli.start_pose_step)
-                step = delta if distance <= max_step else delta / distance * max_step
-                action[env_id, 0:3] = step
-            if not orientation_ready:
-                max_yaw_step = float(args_cli.auto_pick_yaw_step)
-                rotation_step = (
-                    rotation_error
-                    if angular_error <= max_yaw_step
-                    else rotation_error / angular_error * max_yaw_step
-                )
-                action[env_id, 3:6] = rotation_step
-        if len(reached) == len(selected):
+                if scenario.start_ee_yaw_requested_deg is not None:
+                    scenario.start_ee_yaw_offset_deg = round(applied_yaw, 4)
+                    scenario.start_ee_yaw_fallback_scale = fallback_scale
+                    print(
+                        f"[START-AUG-FALLBACK] env={env_id} "
+                        f"requested_yaw={requested_yaw_by_env[env_id]:.2f}deg "
+                        f"applied_yaw={applied_yaw:.2f}deg scale={fallback_scale:.2f}"
+                    )
+            reached.difference_update(unresolved)
+        for _ in range(int(args_cli.start_pose_timeout_steps)):
+            action = open_action.clone()
+            reached = {
+                env_id
+                for env_id, _ in selected
+                if target_action_and_ready(env_id, action)
+            }
+            if reached == all_env_ids:
+                break
+            env.step(action)
+        if reached == all_env_ids:
             break
-        env.step(action)
 
     for _ in range(int(args_cli.start_pose_hold_steps)):
-        env.step(open_action)
+        action = open_action.clone()
+        for env_id, _ in selected:
+            target_action_and_ready(env_id, action)
+        env.step(action)
 
     for env_id, scenario in selected:
         ee_pos, ee_quat = read_ee_pose_env(env, env_id)
@@ -3258,8 +3312,8 @@ def move_to_randomized_start_poses(
             round(float(value), 6) for value in tensor_to_numpy(ee_pos).tolist()
         )  # type: ignore[assignment]
         scenario.start_ee_yaw_error_deg = round(math.degrees(angular_error), 4)
-        scenario.start_ee_orientation_reached = angular_error <= float(
-            args_cli.auto_pick_yaw_tolerance
+        scenario.start_ee_orientation_reached = angular_error <= math.radians(
+            float(args_cli.start_pose_yaw_tolerance_deg)
         )
         scenario.start_ee_tilt_deg = round(final_tilt, 4)
         scenario.start_ee_reached = (
@@ -3270,7 +3324,8 @@ def move_to_randomized_start_poses(
         print(
             f"[START-AUG] env={env_id} {status} target={scenario.start_ee_target} "
             f"actual={scenario.start_ee_actual} error={distance:.4f}m "
-            f"yaw_offset={scenario.start_ee_yaw_offset_deg or 0.0:.2f}deg "
+            f"yaw_requested={scenario.start_ee_yaw_requested_deg or 0.0:.2f}deg "
+            f"yaw_applied={scenario.start_ee_yaw_offset_deg or 0.0:.2f}deg "
             f"yaw_error={scenario.start_ee_yaw_error_deg:.2f}deg "
             f"tool_down_tilt={final_tilt:.2f}deg"
         )

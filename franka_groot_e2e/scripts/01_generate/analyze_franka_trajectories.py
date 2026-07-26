@@ -48,7 +48,9 @@ class EpisodeTrajectory:
     num_remaining: int
     preplaced_blue_cube_names: list[str]
     start_position_stratum: int | None
+    start_ee_yaw_requested_deg: float | None
     start_ee_yaw_offset_deg: float | None
+    start_ee_yaw_fallback_scale: float | None
     start_ee_yaw_error_deg: float | None
     start_ee_orientation_reached: bool | None
     trajectory_modes: list[str]
@@ -301,9 +303,19 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
             if scenario.get("start_position_stratum") is not None
             else None
         ),
+        start_ee_yaw_requested_deg=(
+            float(scenario["start_ee_yaw_requested_deg"])
+            if scenario.get("start_ee_yaw_requested_deg") is not None
+            else None
+        ),
         start_ee_yaw_offset_deg=(
             float(scenario["start_ee_yaw_offset_deg"])
             if scenario.get("start_ee_yaw_offset_deg") is not None
+            else None
+        ),
+        start_ee_yaw_fallback_scale=(
+            float(scenario["start_ee_yaw_fallback_scale"])
+            if scenario.get("start_ee_yaw_fallback_scale") is not None
             else None
         ),
         start_ee_yaw_error_deg=(
@@ -369,7 +381,9 @@ def trajectory_metrics(episode: EpisodeTrajectory) -> dict[str, Any]:
         "num_remaining": episode.num_remaining,
         "preplaced_blue_cube_names": ";".join(episode.preplaced_blue_cube_names),
         "start_position_stratum": episode.start_position_stratum,
+        "start_ee_yaw_requested_deg": episode.start_ee_yaw_requested_deg,
         "start_ee_yaw_offset_deg": episode.start_ee_yaw_offset_deg,
+        "start_ee_yaw_fallback_scale": episode.start_ee_yaw_fallback_scale,
         "start_ee_yaw_error_deg": episode.start_ee_yaw_error_deg,
         "start_ee_orientation_reached": episode.start_ee_orientation_reached,
         "trajectory_modes": ";".join(episode.trajectory_modes),
@@ -1139,6 +1153,11 @@ def main() -> None:
         for episode in episodes
         if episode.start_position_stratum is not None
     )
+    partial_yaw_requests = [
+        float(episode.start_ee_yaw_requested_deg)
+        for episode in episodes
+        if episode.start_ee_yaw_requested_deg is not None
+    ]
     partial_yaw_offsets = [
         float(episode.start_ee_yaw_offset_deg)
         for episode in episodes
@@ -1154,8 +1173,16 @@ def main() -> None:
         for episode in episodes
         if episode.start_ee_orientation_reached is not None
     ]
+    partial_yaw_fallbacks = [
+        float(episode.start_ee_yaw_fallback_scale)
+        for episode in episodes
+        if episode.start_ee_yaw_fallback_scale is not None
+        and float(episode.start_ee_yaw_fallback_scale) < 1.0
+    ]
     partial_yaw_summary = {
         "samples": len(partial_yaw_offsets),
+        "min_requested_deg": min(partial_yaw_requests) if partial_yaw_requests else None,
+        "max_requested_deg": max(partial_yaw_requests) if partial_yaw_requests else None,
         "min_offset_deg": min(partial_yaw_offsets) if partial_yaw_offsets else None,
         "max_offset_deg": max(partial_yaw_offsets) if partial_yaw_offsets else None,
         "mean_offset_deg": (
@@ -1163,6 +1190,7 @@ def main() -> None:
         ),
         "max_error_deg": max(partial_yaw_errors) if partial_yaw_errors else None,
         "orientation_reached": sum(partial_orientation_reached),
+        "fallback_count": len(partial_yaw_fallbacks),
     }
     summary = {
         "input_root": str(input_root),
