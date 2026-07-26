@@ -47,6 +47,8 @@ class EpisodeTrajectory:
     num_preplaced: int
     num_remaining: int
     preplaced_blue_cube_names: list[str]
+    start_position_stratum: int | None
+    trajectory_modes: list[str]
     recovery_planned: bool
     recovery_augmented: bool
     recovery_completed: bool
@@ -291,6 +293,14 @@ def load_episode(input_root: Path, episode_dir: Path) -> EpisodeTrajectory:
         num_preplaced=num_preplaced,
         num_remaining=num_remaining,
         preplaced_blue_cube_names=preplaced_blue_cube_names,
+        start_position_stratum=(
+            int(scenario["start_position_stratum"])
+            if scenario.get("start_position_stratum") is not None
+            else None
+        ),
+        trajectory_modes=[
+            str(cube.get("trajectory_mode", "direct")) for cube in blue_cubes
+        ],
         recovery_planned=any(cube.get("recovery_waypoint") is not None for cube in blue_cubes),
         recovery_augmented=bool(result.get("recovery_augmented")),
         recovery_completed=bool(result.get("recovery_completed")),
@@ -342,6 +352,8 @@ def trajectory_metrics(episode: EpisodeTrajectory) -> dict[str, Any]:
         "num_preplaced": episode.num_preplaced,
         "num_remaining": episode.num_remaining,
         "preplaced_blue_cube_names": ";".join(episode.preplaced_blue_cube_names),
+        "start_position_stratum": episode.start_position_stratum,
+        "trajectory_modes": ";".join(episode.trajectory_modes),
         "recovery_planned": episode.recovery_planned,
         "recovery_augmented": episode.recovery_augmented,
         "recovery_completed": episode.recovery_completed,
@@ -1097,6 +1109,17 @@ def main() -> None:
     write_csv(output_dir / "workspace_coverage.csv", workspace_rows)
 
     total_success = sum(episode.successful for episode in episodes)
+    trajectory_mode_counts = Counter(
+        mode
+        for episode in episodes
+        for mode in episode.trajectory_modes
+        if mode != "preplaced"
+    )
+    start_position_stratum_counts = Counter(
+        episode.start_position_stratum
+        for episode in episodes
+        if episode.start_position_stratum is not None
+    )
     summary = {
         "input_root": str(input_root),
         "trajectory_source": "logs/states.jsonl:ee_pos_env",
@@ -1107,6 +1130,10 @@ def main() -> None:
         "blue_cube_counts": sorted({episode.blue_cube_count for episode in episodes}),
         "scenario_statistics": scenario_rows,
         "progress_stage_statistics": progress_rows,
+        "trajectory_mode_counts": dict(sorted(trajectory_mode_counts.items())),
+        "start_position_stratum_counts": {
+            str(key): value for key, value in sorted(start_position_stratum_counts.items())
+        },
         "failure_analysis": failure_analysis,
         "workspace_coverage": workspace_coverage,
         "skipped_episodes": skipped,

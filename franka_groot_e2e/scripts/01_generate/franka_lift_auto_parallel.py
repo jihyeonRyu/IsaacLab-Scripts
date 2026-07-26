@@ -145,6 +145,17 @@ def add_args() -> argparse.ArgumentParser:
     )
     parser.add_argument("--min_blue_cubes", type=int, default=1)
     parser.add_argument("--max_blue_cubes", type=int, default=3)
+    parser.add_argument(
+        "--blue_cube_count_weights",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="WEIGHT",
+        help=(
+            "Relative sampling weights for every integer count in "
+            "[min_blue_cubes, max_blue_cubes]. Defaults to uniform."
+        ),
+    )
     parser.add_argument("--min_red_cubes", type=int, default=2)
     parser.add_argument("--max_red_cubes", type=int, default=2)
     parser.add_argument("--cube_size", type=float, default=0.05, help="Legacy fixed size used when domain randomization is disabled.")
@@ -321,6 +332,19 @@ def add_args() -> argparse.ArgumentParser:
     parser.add_argument("--start_ee_y_range", type=float, nargs=2, default=(-0.34, 0.34), metavar=("MIN", "MAX"))
     parser.add_argument("--start_ee_z_range", type=float, nargs=2, default=(0.25, 0.55), metavar=("MIN", "MAX"))
     parser.add_argument(
+        "--stratified_start_positions",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Cycle randomized EEF starts through deterministic X/Y/Z workspace bins.",
+    )
+    parser.add_argument(
+        "--start_workspace_bins",
+        type=int,
+        nargs=3,
+        default=(4, 6, 3),
+        metavar=("X_BINS", "Y_BINS", "Z_BINS"),
+    )
+    parser.add_argument(
         "--start_ee_radius_min",
         type=float,
         default=0.40,
@@ -362,6 +386,30 @@ def add_args() -> argparse.ArgumentParser:
         default=(0.12, 0.18),
         metavar=("MIN", "MAX"),
         help="Recovery waypoint height above the target cube center in meters.",
+    )
+    parser.add_argument(
+        "--transit_waypoint_prob",
+        type=float,
+        default=0.25,
+        help=(
+            "Probability per target of following one safe, high transit waypoint "
+            "before direct approach. Mutually exclusive with recovery augmentation."
+        ),
+    )
+    parser.add_argument(
+        "--transit_waypoint_radius_range",
+        type=float,
+        nargs=2,
+        default=(0.12, 0.25),
+        metavar=("MIN", "MAX"),
+    )
+    parser.add_argument(
+        "--transit_waypoint_height_range",
+        type=float,
+        nargs=2,
+        default=(0.18, 0.30),
+        metavar=("MIN", "MAX"),
+        help="Transit waypoint height above the target cube center in meters.",
     )
     parser.add_argument(
         "--partial_progress_2_cube_prob",
@@ -695,6 +743,16 @@ if args_cli.wrist_focal_length <= 0:
     parser.error("--wrist_focal_length must be > 0.")
 if args_cli.min_blue_cubes < 1 or args_cli.max_blue_cubes < args_cli.min_blue_cubes:
     parser.error("blue cube range must satisfy 1 <= min_blue_cubes <= max_blue_cubes.")
+if args_cli.blue_cube_count_weights is not None:
+    expected_weights = args_cli.max_blue_cubes - args_cli.min_blue_cubes + 1
+    if len(args_cli.blue_cube_count_weights) != expected_weights:
+        parser.error(
+            "--blue_cube_count_weights must provide one value for every blue cube count."
+        )
+    if any(float(weight) < 0.0 for weight in args_cli.blue_cube_count_weights):
+        parser.error("--blue_cube_count_weights values must be >= 0.")
+    if not sum(float(weight) for weight in args_cli.blue_cube_count_weights) > 0.0:
+        parser.error("--blue_cube_count_weights must contain a positive value.")
 if args_cli.min_red_cubes < 0 or args_cli.max_red_cubes < args_cli.min_red_cubes:
     parser.error("red cube range must satisfy 0 <= min_red_cubes <= max_red_cubes.")
 if args_cli.workspace_x_max <= args_cli.workspace_x_min or args_cli.workspace_y_max <= args_cli.workspace_y_min:
@@ -705,6 +763,8 @@ if any(int(value) < 1 for value in args_cli.target_workspace_bins):
     parser.error("--target_workspace_bins values must both be >= 1.")
 if math.prod(int(value) for value in args_cli.target_workspace_bins) < args_cli.max_blue_cubes:
     parser.error("--target_workspace_bins must contain at least max_blue_cubes cells.")
+if any(int(value) < 1 for value in args_cli.start_workspace_bins):
+    parser.error("--start_workspace_bins values must all be >= 1.")
 if (
     args_cli.start_ee_radius_min <= 0
     or args_cli.start_ee_radius_max < args_cli.start_ee_radius_min
@@ -762,12 +822,26 @@ if not 0.0 < float(args_cli.start_pose_max_tilt_deg) <= 75.0:
     parser.error("--start_pose_max_tilt_deg must be in (0, 75].")
 if not 0.0 <= float(args_cli.recovery_waypoint_prob) <= 1.0:
     parser.error("--recovery_waypoint_prob must be in [0, 1].")
+if not 0.0 <= float(args_cli.transit_waypoint_prob) <= 1.0:
+    parser.error("--transit_waypoint_prob must be in [0, 1].")
+if (
+    float(args_cli.recovery_waypoint_prob)
+    + float(args_cli.transit_waypoint_prob)
+    > 1.0
+):
+    parser.error("transit and recovery waypoint probabilities must sum to <= 1.")
 recovery_radius_min, recovery_radius_max = map(float, args_cli.recovery_waypoint_radius_range)
 if recovery_radius_min <= 0.0 or recovery_radius_max < recovery_radius_min:
     parser.error("--recovery_waypoint_radius_range must satisfy 0 < MIN <= MAX.")
 recovery_height_min, recovery_height_max = map(float, args_cli.recovery_waypoint_height_range)
 if recovery_height_min < float(args_cli.auto_pick_approach_height) or recovery_height_max < recovery_height_min:
     parser.error("recovery waypoint heights must satisfy approach_height <= MIN <= MAX.")
+transit_radius_min, transit_radius_max = map(float, args_cli.transit_waypoint_radius_range)
+if transit_radius_min <= 0.0 or transit_radius_max < transit_radius_min:
+    parser.error("--transit_waypoint_radius_range must satisfy 0 < MIN <= MAX.")
+transit_height_min, transit_height_max = map(float, args_cli.transit_waypoint_height_range)
+if transit_height_min < float(args_cli.auto_pick_approach_height) or transit_height_max < transit_height_min:
+    parser.error("transit waypoint heights must satisfy approach_height <= MIN <= MAX.")
 for probability_name in (
     "partial_progress_2_cube_prob",
     "partial_progress_3_cube_prob",
@@ -1097,6 +1171,8 @@ class ScenarioObjectSpec:
     static_friction: float = 0.8
     dynamic_friction: float = 0.7
     restitution: float = 0.0
+    trajectory_mode: str = "direct"
+    transit_waypoint: Vec3 | None = None
     recovery_waypoint: Vec3 | None = None
     position_stratum: int | None = None
     preplaced: bool = False
@@ -1139,6 +1215,7 @@ class ScenarioSpec:
     preplaced_blue_cube_names: list[str] = field(default_factory=list)
     remaining_blue_cube_names: list[str] = field(default_factory=list)
     start_pose_mode: str = "random_workspace"
+    start_position_stratum: int | None = None
     start_ee_target: Vec3 | None = None
     start_ee_actual: Vec3 | None = None
     start_ee_tilt_deg: float | None = None
@@ -1184,33 +1261,77 @@ def cuboid_center_z(size_z: float) -> float:
     return table_surface_z + 0.5 * float(size_z)
 
 
-def sample_start_ee_target(rng: np.random.Generator) -> Vec3 | None:
-    """Sample a reachable robot-front EEF position without changing tool orientation."""
+def sample_start_ee_target(
+    rng: np.random.Generator,
+    scenario_ordinal: int,
+) -> tuple[Vec3 | None, int | None]:
+    """Sample a reachable robot-front EEF position with balanced X/Y/Z coverage."""
     if not args_cli.randomize_start_pose:
-        return None
+        return None, None
     bounds = (args_cli.start_ee_x_range, args_cli.start_ee_y_range, args_cli.start_ee_z_range)
-    for _ in range(256):
-        target = tuple(float(rng.uniform(*axis_bounds)) for axis_bounds in bounds)
-        radius = math.hypot(target[0], target[1])
-        if (
-            float(args_cli.start_ee_radius_min)
-            <= radius
-            <= float(args_cli.start_ee_radius_max)
-        ):
-            return tuple(round(value, 6) for value in target)  # type: ignore[return-value]
+    if args_cli.stratified_start_positions:
+        bins = tuple(int(value) for value in args_cli.start_workspace_bins)
+        total_cells = math.prod(bins)
+        permutation_rng = np.random.default_rng(
+            int(args_cli.seed) * 2_000_003
+            + bins[0] * 10_007
+            + bins[1] * 101
+            + bins[2]
+        )
+        permutation = [
+            int(value) for value in permutation_rng.permutation(total_cells)
+        ]
+        first_cell = int(scenario_ordinal) % total_cells
+        cell_order = [
+            permutation[(first_cell + offset) % total_cells]
+            for offset in range(total_cells)
+        ]
+    else:
+        cell_order = [0]
+        bins = (1, 1, 1)
+
+    for cell_id in cell_order:
+        x_index = int(cell_id) // (bins[1] * bins[2])
+        yz_index = int(cell_id) % (bins[1] * bins[2])
+        y_index, z_index = divmod(yz_index, bins[2])
+        indices = (x_index, y_index, z_index)
+        cell_bounds = tuple(
+            (
+                float(axis_bounds[0])
+                + (float(axis_bounds[1]) - float(axis_bounds[0])) * index / count,
+                float(axis_bounds[0])
+                + (float(axis_bounds[1]) - float(axis_bounds[0])) * (index + 1) / count,
+            )
+            for axis_bounds, index, count in zip(bounds, indices, bins)
+        )
+        for _ in range(64):
+            target = tuple(
+                float(rng.uniform(*axis_bounds)) for axis_bounds in cell_bounds
+            )
+            radius = math.hypot(target[0], target[1])
+            if (
+                float(args_cli.start_ee_radius_min)
+                <= radius
+                <= float(args_cli.start_ee_radius_max)
+            ):
+                return (
+                    tuple(round(value, 6) for value in target),
+                    int(cell_id) if args_cli.stratified_start_positions else None,
+                )  # type: ignore[return-value]
     raise RuntimeError("failed to sample a reachable randomized start EEF target")
 
 
-def sample_recovery_waypoint(
-    rng: np.random.Generator, cube: ScenarioObjectSpec
-) -> Vec3 | None:
-    """Sample a safe nearby waypoint for a deliberate off-target recovery approach."""
-    if rng.random() >= float(args_cli.recovery_waypoint_prob):
-        return None
+def sample_radial_waypoint(
+    rng: np.random.Generator,
+    cube: ScenarioObjectSpec,
+    radius_range: tuple[float, float] | list[float],
+    height_range: tuple[float, float] | list[float],
+) -> Vec3:
+    """Sample one safe, high waypoint around a target cube."""
     margin = 0.02
     for _ in range(256):
         angle = float(rng.uniform(-math.pi, math.pi))
-        radius = float(rng.uniform(*args_cli.recovery_waypoint_radius_range))
+        radius = float(rng.uniform(*radius_range))
         xy = (cube.pos[0] + radius * math.cos(angle), cube.pos[1] + radius * math.sin(angle))
         if not float(args_cli.workspace_x_min) + margin <= xy[0] <= float(args_cli.workspace_x_max) - margin:
             continue
@@ -1218,8 +1339,42 @@ def sample_recovery_waypoint(
             continue
         if not within_workspace_reach(xy):
             continue
-        height = float(rng.uniform(*args_cli.recovery_waypoint_height_range))
+        height = float(rng.uniform(*height_range))
         return (round(xy[0], 6), round(xy[1], 6), round(cube.pos[2] + height, 6))
+    raise RuntimeError(f"failed to sample a safe radial waypoint for {cube.name}")
+
+
+def sample_trajectory_mode(
+    rng: np.random.Generator,
+    cube: ScenarioObjectSpec,
+) -> tuple[str, Vec3 | None, Vec3 | None]:
+    """Choose one mutually exclusive, successful approach-path family."""
+    sample = float(rng.random())
+    transit_probability = float(args_cli.transit_waypoint_prob)
+    recovery_probability = float(args_cli.recovery_waypoint_prob)
+    if sample < transit_probability:
+        return (
+            "transit",
+            sample_radial_waypoint(
+                rng,
+                cube,
+                args_cli.transit_waypoint_radius_range,
+                args_cli.transit_waypoint_height_range,
+            ),
+            None,
+        )
+    if sample < transit_probability + recovery_probability:
+        return (
+            "recovery",
+            None,
+            sample_radial_waypoint(
+                rng,
+                cube,
+                args_cli.recovery_waypoint_radius_range,
+                args_cli.recovery_waypoint_height_range,
+            ),
+        )
+    return "direct", None, None
 
 
 def sample_partial_progress_count(
@@ -1269,6 +1424,8 @@ def preplace_blue_cubes(
         cube.preplaced = True
         cube.initial_placement_slot = slot_index
         cube.position_stratum = None
+        cube.trajectory_mode = "preplaced"
+        cube.transit_waypoint = None
         cube.recovery_waypoint = None
         preplaced.append(cube)
     return preplaced
@@ -1580,9 +1737,23 @@ def target_workspace_cell_order(
 
 
 _BLUE_SCENARIO_ORDINALS: dict[
-    tuple[int, int, int], list[tuple[int, int]]
+    tuple[Any, ...], list[tuple[int, int]]
 ] = {}
-_BLUE_SCENARIO_TOTALS: dict[tuple[int, int, int], dict[int, int]] = {}
+_BLUE_SCENARIO_TOTALS: dict[tuple[Any, ...], dict[int, int]] = {}
+
+
+def sample_blue_cube_count(rng: np.random.Generator) -> int:
+    """Sample a blue-cube count using optional user-supplied relative weights."""
+    counts = np.arange(
+        int(args_cli.min_blue_cubes),
+        int(args_cli.max_blue_cubes) + 1,
+        dtype=np.int64,
+    )
+    if args_cli.blue_cube_count_weights is None:
+        return int(rng.integers(counts[0], counts[-1] + 1))
+    probabilities = np.asarray(args_cli.blue_cube_count_weights, dtype=np.float64)
+    probabilities /= probabilities.sum()
+    return int(rng.choice(counts, p=probabilities))
 
 
 def blue_scenario_count_and_ordinal(episode_index: int) -> tuple[int, int]:
@@ -1591,15 +1762,14 @@ def blue_scenario_count_and_ordinal(episode_index: int) -> tuple[int, int]:
         int(args_cli.seed),
         int(args_cli.min_blue_cubes),
         int(args_cli.max_blue_cubes),
+        tuple(args_cli.blue_cube_count_weights or ()),
     )
     records = _BLUE_SCENARIO_ORDINALS.setdefault(key, [])
     totals = _BLUE_SCENARIO_TOTALS.setdefault(key, {})
     while len(records) <= int(episode_index):
         index = len(records)
         count_rng = np.random.default_rng(int(args_cli.seed) + index)
-        count = int(
-            count_rng.integers(args_cli.min_blue_cubes, args_cli.max_blue_cubes + 1)
-        )
+        count = sample_blue_cube_count(count_rng)
         ordinal = totals.get(count, 0)
         records.append((count, ordinal))
         totals[count] = ordinal + 1
@@ -1694,9 +1864,7 @@ def _generate_blue_tray_scenario_once(
     rng = np.random.default_rng(seed)
 
     count_rng = np.random.default_rng(base_seed)
-    sampled_blue_count = int(
-        count_rng.integers(args_cli.min_blue_cubes, args_cli.max_blue_cubes + 1)
-    )
+    sampled_blue_count = sample_blue_cube_count(count_rng)
     blue_count, blue_scenario_ordinal = blue_scenario_count_and_ordinal(episode_index)
     if blue_count != sampled_blue_count:
         raise RuntimeError(
@@ -1920,15 +2088,22 @@ def _generate_blue_tray_scenario_once(
         start_ee_target = sample_partial_progress_start_ee_target(
             augmentation_rng, preplaced_cubes[-1]
         )
+        start_position_stratum = None
         start_pose_mode = (
             "post_placement_retreat" if start_ee_target is not None else "default"
         )
     else:
-        start_ee_target = sample_start_ee_target(augmentation_rng)
+        start_ee_target, start_position_stratum = sample_start_ee_target(
+            augmentation_rng, blue_scenario_ordinal
+        )
         start_pose_mode = "random_workspace" if start_ee_target is not None else "default"
     for cube in blue_cubes:
         if not cube.preplaced:
-            cube.recovery_waypoint = sample_recovery_waypoint(augmentation_rng, cube)
+            (
+                cube.trajectory_mode,
+                cube.transit_waypoint,
+                cube.recovery_waypoint,
+            ) = sample_trajectory_mode(augmentation_rng, cube)
 
     return ScenarioSpec(
         episode_index=episode_index,
@@ -1955,6 +2130,7 @@ def _generate_blue_tray_scenario_once(
         preplaced_blue_cube_names=preplaced_names,
         remaining_blue_cube_names=remaining_names,
         start_pose_mode=start_pose_mode,
+        start_position_stratum=start_position_stratum,
         start_ee_target=start_ee_target,
     )
 
@@ -3068,6 +3244,7 @@ class AutoPickPlaceController:
 
     SOLVER_RECOVERABLE_STATES = frozenset(
         {
+            "transit_waypoint",
             "recovery_waypoint",
             "approach",
             "align_yaw",
@@ -3095,6 +3272,8 @@ class AutoPickPlaceController:
         self.retry_count = 0
         self.yaw_response_sign = 1.0
         self.yaw_probe_start: float | None = None
+        self.transit_waypoint: torch.Tensor | None = None
+        self.transit_completed = False
         self.recovery_waypoint: torch.Tensor | None = None
         self.recovery_completed = False
         self.solver_recovery_attempts = 0
@@ -3120,6 +3299,13 @@ class AutoPickPlaceController:
                     self.scenario.num_remaining if self.scenario is not None else 0
                 ),
                 "newly_placed_count": max(0, len(self.processed) - num_preplaced),
+                "trajectory_mode": (
+                    self.current_spec.trajectory_mode
+                    if self.current_spec is not None
+                    else None
+                ),
+                "transit_augmented": self.transit_waypoint is not None,
+                "transit_completed": self.transit_completed,
                 "recovery_augmented": self.recovery_waypoint is not None,
                 "recovery_completed": self.recovery_completed,
                 "solver_recovery_attempts": self.solver_recovery_attempts,
@@ -3210,6 +3396,12 @@ class AutoPickPlaceController:
         self.solver_recovery_return_state = None
         self.solver_recovery_raise_target = None
         self.solver_recovery_center_target = None
+        self.transit_waypoint = (
+            torch.tensor(cube.transit_waypoint, device=env.device, dtype=torch.float32)
+            if cube.transit_waypoint is not None
+            else None
+        )
+        self.transit_completed = False
         self.recovery_waypoint = (
             torch.tensor(cube.recovery_waypoint, device=env.device, dtype=torch.float32)
             if cube.recovery_waypoint is not None
@@ -3218,6 +3410,8 @@ class AutoPickPlaceController:
         self.recovery_completed = False
         self._transition(
             "open", target_pos=tensor_to_numpy(pos).tolist(),
+            trajectory_mode=cube.trajectory_mode,
+            transit_waypoint=cube.transit_waypoint,
             recovery_waypoint=cube.recovery_waypoint,
         )
         return True
@@ -3504,12 +3698,24 @@ class AutoPickPlaceController:
                     self._transition(return_state)
         elif self.state == "open":
             if self.state_steps >= hold:
-                next_state = (
-                    "recovery_waypoint"
-                    if self.recovery_waypoint is not None and not self.recovery_completed
-                    else "approach"
-                )
+                if self.transit_waypoint is not None and not self.transit_completed:
+                    next_state = "transit_waypoint"
+                elif self.recovery_waypoint is not None and not self.recovery_completed:
+                    next_state = "recovery_waypoint"
+                else:
+                    next_state = "approach"
                 self._transition(next_state)
+        elif self.state == "transit_waypoint":
+            assert self.transit_waypoint is not None
+            if self._position_action(
+                action, ee_pos, self.transit_waypoint, float(args_cli.auto_pick_step)
+            ):
+                self.transit_completed = True
+                self._event(
+                    "transit_waypoint_reached",
+                    waypoint=tensor_to_numpy(self.transit_waypoint).tolist(),
+                )
+                self._transition("approach")
         elif self.state == "recovery_waypoint":
             assert self.recovery_waypoint is not None
             if self._position_action(
@@ -3803,8 +4009,10 @@ def make_vector_template_scenario(first_episode: int) -> ScenarioSpec:
         args_cli.partial_progress_2_cube_prob,
         args_cli.partial_progress_3_cube_prob,
     )
+    saved_blue_cube_count_weights = args_cli.blue_cube_count_weights
     try:
         args_cli.min_blue_cubes = args_cli.max_blue_cubes
+        args_cli.blue_cube_count_weights = None
         args_cli.min_red_cubes = args_cli.max_red_cubes
         # The clone template describes asset capacity, not a training episode.
         # Keep every template object loose and non-overlapping before PhysX starts.
@@ -3822,6 +4030,7 @@ def make_vector_template_scenario(first_episode: int) -> ScenarioSpec:
             args_cli.partial_progress_2_cube_prob,
             args_cli.partial_progress_3_cube_prob,
         ) = saved_partial_probs
+        args_cli.blue_cube_count_weights = saved_blue_cube_count_weights
 
     # A common base mesh is required for scene cloning. Isaac Lab's USD event
     # scales each clone independently before PhysX starts.
@@ -4420,6 +4629,8 @@ def run_layout_validation_only() -> None:
     first_blue_positions: dict[int, list[tuple[float, float]]] = {}
     blue_strata: dict[int, list[int]] = {}
     first_blue_strata: dict[int, list[int]] = {}
+    start_position_strata: dict[int, list[int]] = {}
+    trajectory_mode_counts: dict[str, int] = {}
     for offset in range(count):
         scenario = generate_blue_tray_scenario(
             first_episode + offset, fixed_trays[offset % env_count]
@@ -4445,6 +4656,14 @@ def run_layout_validation_only() -> None:
         if loose_cubes[0].position_stratum is not None:
             first_blue_strata.setdefault(blue_count, []).append(
                 int(loose_cubes[0].position_stratum)
+            )
+        if scenario.start_position_stratum is not None:
+            start_position_strata.setdefault(blue_count, []).append(
+                int(scenario.start_position_stratum)
+            )
+        for cube in loose_cubes:
+            trajectory_mode_counts[cube.trajectory_mode] = (
+                trajectory_mode_counts.get(cube.trajectory_mode, 0) + 1
             )
 
     x_bins, y_bins = (int(value) for value in args_cli.target_workspace_bins)
@@ -4476,6 +4695,16 @@ def run_layout_validation_only() -> None:
             ),
         }
 
+    start_cell_count = math.prod(int(value) for value in args_cli.start_workspace_bins)
+    start_coverage = {
+        blue_count: {
+            "samples": len(strata),
+            "occupied_cells": len(set(strata)),
+            "total_cells": start_cell_count,
+            "cell_counts": np.bincount(strata, minlength=start_cell_count).tolist(),
+        }
+        for blue_count, strata in sorted(start_position_strata.items())
+    }
     coverage = {
         blue_count: {
             "all_targets": coverage_row(
@@ -4498,6 +4727,11 @@ def run_layout_validation_only() -> None:
                 "progress_stage_counts": progress_stage_counts,
                 "target_workspace_bins": [x_bins, y_bins],
                 "blue_target_coverage": coverage,
+                "start_workspace_bins": [
+                    int(value) for value in args_cli.start_workspace_bins
+                ],
+                "start_position_coverage": start_coverage,
+                "trajectory_mode_counts": trajectory_mode_counts,
                 "tray_overlap_count": 0,
             },
             sort_keys=True,

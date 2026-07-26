@@ -19,12 +19,12 @@ ARENA_PYTHON="${ARENA_PYTHON:-}"
 GROOT_PYTHON="${GROOT_PYTHON:-}"
 RAW_DATASET="${RAW_DATASET:-}"
 LEROBOT_DATASET="${LEROBOT_DATASET:-}"
-EXPERIMENT_NAME="${EXPERIMENT_NAME:-franka-blue-cube-partial-progress-1200-ema}"
+EXPERIMENT_NAME="${EXPERIMENT_NAME:-franka-blue-cube-max2-robust-2000-ema}"
 CHECKPOINT="${CHECKPOINT:-}"
 EVAL_OUTPUT="${EVAL_OUTPUT:-}"
 STATE_DIR="${STATE_DIR:-}"
-GENERATION_EPISODES="${GENERATION_EPISODES:-1200}"
-GENERATION_SEED="${GENERATION_SEED:-90007}"
+GENERATION_EPISODES="${GENERATION_EPISODES:-2000}"
+GENERATION_SEED="${GENERATION_SEED:-91007}"
 GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-128}"
 MAX_STEPS="${MAX_STEPS:-auto}"
 TARGET_DATA_PASSES="${TARGET_DATA_PASSES:-4.5}"
@@ -74,8 +74,8 @@ Paths:
   --state-dir PATH
 
 Run settings:
-  --generation-episodes N     Default: 1200 attempts
-  --generation-seed N         Default: 90007
+  --generation-episodes N     Default: 2000 attempts
+  --generation-seed N         Default: 91007
   --global-batch-size N       Default: 128 across 8 GPUs
   --max-steps auto|N          Default: auto
   --target-data-passes VALUE  Default: 4.5 when max-steps=auto
@@ -89,9 +89,10 @@ Other:
   -h, --help
 
 Fixed task settings:
-  Maximum two blue cubes; 2-cube partial progress 25%. Near-cube recovery
-  waypoint probability is 10%, solver recovery is limited to one retry, model
-  horizon is 40, and Arena evaluates 1/2-cube tasks from the fixed default
+  Maximum two blue cubes, sampled 25/75%; 2-cube partial progress 30%.
+  Starts use stratified X/Y/Z workspace coverage. Target approach paths are
+  direct 65%, safe transit 25%, and near-cube recovery 10%. Solver recovery is
+  limited to one retry. Arena evaluates 1/2-cube tasks from the fixed default
   robot pose while executing 16 actions at 15 Hz.
 EOF
 }
@@ -185,9 +186,9 @@ FFMPEG_RUNTIME="$(realpath -m -- "${FFMPEG_RUNTIME:-${WORKSPACE_ROOT}/.tools/ffm
 ISAAC_PYTHON="$(normalize_executable_path "${ISAAC_PYTHON:-${WORKSPACE_ROOT}/env_isaaclab/bin/python}")"
 ARENA_PYTHON="$(normalize_executable_path "${ARENA_PYTHON:-${ISAAC_PYTHON}}")"
 GROOT_PYTHON="$(normalize_executable_path "${GROOT_PYTHON:-${GROOT_REPO}/.venv/bin/python}")"
-RAW_DATASET="$(realpath -m -- "${RAW_DATASET:-${WORKSPACE_ROOT}/output/franka_partial_progress_${GENERATION_EPISODES}eps_seed${GENERATION_SEED}}")"
-LEROBOT_DATASET="$(realpath -m -- "${LEROBOT_DATASET:-${WORKSPACE_ROOT}/datasets/franka_partial_progress_seed${GENERATION_SEED}_lerobot}")"
-EVAL_OUTPUT="$(realpath -m -- "${EVAL_OUTPUT:-${ARENA_REPO}/outputs/franka-gr00t-parallel/partial-progress-1200-ema-default-start-8gpu-100eps}")"
+RAW_DATASET="$(realpath -m -- "${RAW_DATASET:-${WORKSPACE_ROOT}/output/franka_max2_robust_${GENERATION_EPISODES}eps_seed${GENERATION_SEED}}")"
+LEROBOT_DATASET="$(realpath -m -- "${LEROBOT_DATASET:-${WORKSPACE_ROOT}/datasets/franka_max2_robust_seed${GENERATION_SEED}_lerobot}")"
+EVAL_OUTPUT="$(realpath -m -- "${EVAL_OUTPUT:-${ARENA_REPO}/outputs/franka-gr00t-parallel/max2-robust-2000-ema-default-start-8gpu-100eps}")"
 STATE_DIR="$(realpath -m -- "${STATE_DIR:-${WORKSPACE_ROOT}/output/franka_e2e_pipeline_final}")"
 RUN_DIR="${GROOT_REPO}/outputs/franka-groot-sft/${EXPERIMENT_NAME}"
 ATTENTION_DIR="${GROOT_REPO}/outputs/attention/${EXPERIMENT_NAME}"
@@ -200,7 +201,8 @@ Resolved final Franka pipeline
   raw dataset        : ${RAW_DATASET}
   LeRobot dataset    : ${LEROBOT_DATASET}
   generation         : ${GENERATION_EPISODES} attempts, seed ${GENERATION_SEED}, 8 GPUs x 4 envs
-  partial progress   : 2c=25%; 3c=30% (conditional two-preplaced=40%)
+  scenario mix       : 1c=25%; 2c=75%; 2c one-preplaced=30%
+  trajectory mix     : direct=65%; transit=25%; near-cube recovery=10%
   experiment         : ${EXPERIMENT_NAME}
   batch              : ${GLOBAL_BATCH_SIZE} global ($((GLOBAL_BATCH_SIZE / 8)) per GPU)
   steps              : ${MAX_STEPS} (target passes=${TARGET_DATA_PASSES})
@@ -321,6 +323,7 @@ if [ ! -f "${STATE_DIR}/generation.done" ]; then
             --no_realtime \
             --seed "${GENERATION_SEED}" \
             --max_blue_cubes 2 \
+            --blue_cube_count_weights 0.25 0.75 \
             --workspace_x_min 0.33 \
             --workspace_x_max 0.70 \
             --workspace_y_min -0.34 \
@@ -329,6 +332,8 @@ if [ ! -f "${STATE_DIR}/generation.done" ]; then
             --stratified_target_positions \
             --target_workspace_bins 4 6 \
             --randomize_start_pose \
+            --stratified_start_positions \
+            --start_workspace_bins 4 6 3 \
             --start_ee_x_range 0.36 0.70 \
             --start_ee_y_range -0.34 0.34 \
             --start_ee_z_range 0.25 0.55 \
@@ -337,7 +342,10 @@ if [ ! -f "${STATE_DIR}/generation.done" ]; then
             --recovery_waypoint_prob 0.10 \
             --recovery_waypoint_radius_range 0.04 0.08 \
             --recovery_waypoint_height_range 0.12 0.18 \
-            --partial_progress_2_cube_prob 0.25 \
+            --transit_waypoint_prob 0.25 \
+            --transit_waypoint_radius_range 0.12 0.25 \
+            --transit_waypoint_height_range 0.18 0.30 \
+            --partial_progress_2_cube_prob 0.30 \
             --partial_progress_start_xy_radius_range 0.0 0.05 \
             --partial_progress_start_clearance_range 0.12 0.20 \
             --solver_recovery_max_attempts 1
