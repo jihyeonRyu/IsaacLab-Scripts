@@ -30,14 +30,14 @@
     7
   ],
   "ports": [
-    5955,
-    5956,
-    5957,
-    5958,
-    5959,
-    5960,
-    5961,
-    5962
+    6155,
+    6156,
+    6157,
+    6158,
+    6159,
+    6160,
+    6161,
+    6162
   ],
   "randomize_policy_start_pose": false,
   "rtx_kit_args": "--/rtx/hydra/progressiveSceneLoad=false --/rtx/hydra/geometrySyncLoads=true --/rtx-transient/hydra/geometrystreaming/syncLoad=true",

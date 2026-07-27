@@ -420,8 +420,8 @@ print(json.dumps(summary, indent=2))
 PY
 ```
 
-The validated fixed-default-pose result is 97/100 for one cube and 67/100 for
-two cubes.
+The validated fixed-default-pose result is 98/100 for one cube and 70/100 for
+two cubes. Arena uses the generator-matched center-within-tray 15 mm margin.
 
 ## 10. Package the evidence and customer docs
 

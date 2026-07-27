@@ -1,14 +1,14 @@
 {
   "franka_blue_tray_1_cube": {
     "episodes": 100,
-    "failures": 3,
-    "success_rate": 0.97,
-    "successes": 97
+    "failures": 2,
+    "success_rate": 0.98,
+    "successes": 98
   },
   "franka_blue_tray_2_cubes": {
     "episodes": 100,
-    "failures": 33,
-    "success_rate": 0.67,
-    "successes": 67
+    "failures": 30,
+    "success_rate": 0.7,
+    "successes": 70
   }
 }

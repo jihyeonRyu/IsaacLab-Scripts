@@ -14,8 +14,8 @@ VRAM each.
 
 | Task | Successes | Episodes | Success rate |
 |---|---:|---:|---:|
-| 1 blue cube | 97 | 100 | 97.0% |
-| **2 blue cubes** | **67** | **100** | **67.0%** |
+| 1 blue cube | 98 | 100 | 98.0% |
+| **2 blue cubes** | **70** | **100** | **70.0%** |
 
 Machine-readable results: [assets/arena/summary.json](assets/arena/summary.json).
 
@@ -240,6 +240,9 @@ the 1- and 2-cube tasks, 100 episodes each, from the fixed default Franka pose.
 Evaluation seeds start at 10007 and 20007, independent of generation seed
 91007. GR00T predicts 40 frames and Arena executes the first 16
 actions at 15 Hz before the next inference.
+Arena and the synthetic generator both count a cube as placed when its center
+is within the tray footprint with a 15 mm margin; Arena additionally checks
+height and settled linear velocity.
 
 ### 1 cube — success
 
@@ -284,14 +287,6 @@ actions at 15 Hz before the next inference.
 </video>
 
 ![1-cube failure 2 animated preview](assets/arena/1-cube-failure-02-external.gif)
-
-#### 1-cube failure 3
-
-<video controls muted preload="metadata" width="640">
-  <source src="assets/arena/1-cube-failure-03-external.mp4" type="video/mp4">
-</video>
-
-![1-cube failure 3 animated preview](assets/arena/1-cube-failure-03-external.gif)
 
 ### 2 cubes — success
 

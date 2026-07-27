@@ -275,11 +275,9 @@ def package_arena(arena_output: Path, destination: Path) -> dict[str, Any]:
             candidates = [
                 item for item in task_records if item[0].get("success") is desired
             ]
-            if len(candidates) < REPRESENTATIVE_COUNT:
-                raise RuntimeError(
-                    f"{task}: expected at least {REPRESENTATIVE_COUNT} {outcome} "
-                    f"episodes, found {len(candidates)}"
-                )
+            if not candidates:
+                raise RuntimeError(f"{task}: found no {outcome} episodes")
+            representative_count = min(REPRESENTATIVE_COUNT, len(candidates))
             candidates.sort(
                 key=lambda item: (
                     int(item[0].get("episode_length", 0)),
@@ -296,18 +294,18 @@ def package_arena(arena_output: Path, destination: Path) -> dict[str, Any]:
                     continue
                 chosen.append(item)
                 seen_ranks.add(rank)
-                if len(chosen) == REPRESENTATIVE_COUNT:
+                if len(chosen) == representative_count:
                     break
-            if len(chosen) < REPRESENTATIVE_COUNT:
+            if len(chosen) < representative_count:
                 chosen_paths = {path for _, path in chosen}
                 for item in candidates:
                     if item[1] in chosen_paths:
                         continue
                     chosen.append(item)
                     chosen_paths.add(item[1])
-                    if len(chosen) == REPRESENTATIVE_COUNT:
+                    if len(chosen) == representative_count:
                         break
-            if len(chosen) != REPRESENTATIVE_COUNT:
+            if len(chosen) != representative_count:
                 raise RuntimeError(
                     f"{task}: selected {len(chosen)} {outcome} representatives"
                 )
@@ -348,15 +346,17 @@ def arena_index_html(summary: dict[str, dict[str, int | float]]) -> str:
     for task, label in TASK_LABELS.items():
         result = summary[task]
         slug = "1-cube" if task.endswith("_1_cube") else "2-cubes"
+        success_count = min(REPRESENTATIVE_COUNT, int(result["successes"]))
+        failure_count = min(REPRESENTATIVE_COUNT, int(result["failures"]))
         success_videos = "".join(
             f"<video controls muted preload='metadata' "
             f"src='{slug}-success-{index:02d}-external.mp4'></video>"
-            for index in range(1, REPRESENTATIVE_COUNT + 1)
+            for index in range(1, success_count + 1)
         )
         failure_videos = "".join(
             f"<video controls muted preload='metadata' "
             f"src='{slug}-failure-{index:02d}-external.mp4'></video>"
-            for index in range(1, REPRESENTATIVE_COUNT + 1)
+            for index in range(1, failure_count + 1)
         )
         rows.append(
             "<tr>"
@@ -547,13 +547,15 @@ def render_readme(
             f"![{label} animated preview]({preview_path})"
         )
 
-    def arena_video_embeds(task_slug: str, outcome: str) -> str:
+    def arena_video_embeds(
+        task_slug: str, outcome: str, available_count: int
+    ) -> str:
         return "\n\n".join(
             video_embed(
                 f"assets/arena/{task_slug}-{outcome}-{index:02d}-external.mp4",
                 f"{task_slug} {outcome} {index}",
             )
-            for index in range(1, REPRESENTATIVE_COUNT + 1)
+            for index in range(1, min(REPRESENTATIVE_COUNT, available_count) + 1)
         )
 
     full_start_path = "assets/generation/" + generation_videos["2c-full-start-success"]
@@ -562,10 +564,18 @@ def render_readme(
         video_embed(full_start_path, "2-cube full start"),
         video_embed(partial_path, "2-cube one-preplaced continuation"),
     ])
-    arena_one_success = arena_video_embeds("1-cube", "success")
-    arena_one_failure = arena_video_embeds("1-cube", "failure")
-    arena_two_success = arena_video_embeds("2-cubes", "success")
-    arena_two_failure = arena_video_embeds("2-cubes", "failure")
+    arena_one_success = arena_video_embeds(
+        "1-cube", "success", int(arena_one["successes"])
+    )
+    arena_one_failure = arena_video_embeds(
+        "1-cube", "failure", int(arena_one["failures"])
+    )
+    arena_two_success = arena_video_embeds(
+        "2-cubes", "success", int(arena_two["successes"])
+    )
+    arena_two_failure = arena_video_embeds(
+        "2-cubes", "failure", int(arena_two["failures"])
+    )
 
     return f"""# Franka synthetic data → GR00T → IsaacLab-Arena
 
@@ -761,6 +771,9 @@ the 1- and 2-cube tasks, 100 episodes each, from the fixed default Franka pose.
 Evaluation seeds start at 10007 and 20007, independent of generation seed
 {generation_seed}. GR00T predicts 40 frames and Arena executes the first 16
 actions at 15 Hz before the next inference.
+Arena and the synthetic generator both count a cube as placed when its center
+is within the tray footprint with a 15 mm margin; Arena additionally checks
+height and settled linear velocity.
 
 ### 1 cube — success
 
@@ -882,7 +895,7 @@ def main() -> None:
         "| Generation | two representative 2-cube videos plus inline GIF previews |\n"
         "| Analysis | trajectory, workspace, progress, and failure plots plus CSV/JSON |\n"
         "| SFT | first-checkpoint vs final-EMA attention (four matched samples each) |\n"
-        "| Arena | summary plus three success and three failure MP4/GIF pairs per task |\n\n"
+        "| Arena | summary plus up to three success/failure MP4/GIF pairs per task |\n\n"
         f"Fixed-default-pose Arena: **2 cubes {two['successes']}/100 "
         f"({100.0 * float(two['success_rate']):.1f}%)**; "
         f"1 cube {one['successes']}/100 "
