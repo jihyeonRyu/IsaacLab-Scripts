@@ -7,8 +7,10 @@ import argparse
 import datetime as dt
 import html
 import json
+import os
 import re
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +73,41 @@ def require_file(path: Path) -> Path:
     return path
 
 
+def create_animated_preview(video_path: Path) -> Path:
+    """Create a compact full-episode GIF that GitHub renders inline."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        runtime = os.environ.get("FFMPEG_RUNTIME")
+        candidate = Path(runtime) / "bin/ffmpeg" if runtime else None
+        if candidate is None or not candidate.is_file():
+            raise RuntimeError("ffmpeg is required to create README video previews")
+        ffmpeg = str(candidate)
+    preview_path = video_path.with_suffix(".gif")
+    subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(video_path),
+            "-filter_complex",
+            (
+                "[0:v]fps=2,scale=320:-2:flags=lanczos,split[v0][v1];"
+                "[v0]palettegen=max_colors=96:stats_mode=diff[p];"
+                "[v1][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle"
+            ),
+            "-loop",
+            "0",
+            "-an",
+            "-y",
+            str(preview_path),
+        ],
+        check=True,
+    )
+    return require_file(preview_path)
+
+
 def replace_directory(source: Path, destination: Path) -> None:
     if not source.is_dir():
         raise FileNotFoundError(source)
@@ -130,6 +167,7 @@ def package_generation(raw_dataset: Path, destination: Path) -> dict[str, str]:
     for label, episode_dir in selections.items():
         output_name = f"{label}-{episode_dir.name}-external.mp4"
         shutil.copy2(episode_dir / "external_rgb.mp4", staged / output_name)
+        create_animated_preview(staged / output_name)
         packaged[label] = output_name
     (staged / "selection.json").write_text(
         json.dumps(packaged, indent=2, sort_keys=True) + "\n",
@@ -278,6 +316,7 @@ def package_arena(arena_output: Path, destination: Path) -> dict[str, Any]:
                     f"{task_slug}-{outcome}-{index:02d}-external.mp4"
                 )
                 shutil.copy2(video_path, staged / output_name)
+                create_animated_preview(staged / output_name)
                 representatives[output_name] = {
                     key: record.get(key)
                     for key in (
@@ -488,18 +527,46 @@ def render_readme(
         names = [name for name in attention_names if name.startswith(prefix)]
         if len(names) != 4:
             raise RuntimeError(f"Expected four {title} probes, found {names}")
-        links = "\n".join(
-            f"- [{name.removesuffix('.png')}](assets/attention/{name})"
-            for name in names
-        )
-        attention_groups.append(f"### {title}\n\n{links}")
+        rendered_images = []
+        for name in names:
+            label = name.removesuffix(".png")
+            rendered_images.append(
+                f"#### {label}\n\n![{label}](assets/attention/{name})"
+            )
+        images = "\n\n".join(rendered_images)
+        attention_groups.append(f"### {title}\n\n{images}")
     attention_lines = "\n\n".join(attention_groups)
 
-    def arena_video_links(task_slug: str, outcome: str) -> str:
-        return " ".join(
-            f"[{index}](assets/arena/{task_slug}-{outcome}-{index:02d}-external.mp4)"
+    def video_embed(path: str, label: str) -> str:
+        preview_path = str(Path(path).with_suffix(".gif"))
+        return (
+            f"#### {label}\n\n"
+            f"<video controls muted preload=\"metadata\" width=\"640\">\n"
+            f"  <source src=\"{path}\" type=\"video/mp4\">\n"
+            f"</video>\n\n"
+            f"![{label} animated preview]({preview_path})"
+        )
+
+    def arena_video_embeds(task_slug: str, outcome: str) -> str:
+        return "\n\n".join(
+            video_embed(
+                f"assets/arena/{task_slug}-{outcome}-{index:02d}-external.mp4",
+                f"{task_slug} {outcome} {index}",
+            )
             for index in range(1, REPRESENTATIVE_COUNT + 1)
         )
+
+    full_start_path = "assets/generation/" + generation_videos["2c-full-start-success"]
+    partial_path = "assets/generation/" + generation_videos["2c-1-preplaced-success"]
+    generation_video_embeds = "\n\n".join([
+        video_embed(full_start_path, "2-cube full start"),
+        video_embed(partial_path, "2-cube one-preplaced continuation"),
+    ])
+    arena_one_success = arena_video_embeds("1-cube", "success")
+    arena_one_failure = arena_video_embeds("1-cube", "failure")
+    arena_two_success = arena_video_embeds("2-cubes", "success")
+    arena_two_failure = arena_video_embeds("2-cubes", "failure")
+
     return f"""# Franka synthetic data → GR00T → IsaacLab-Arena
 
 This is the reproducible maximum-two-blue-cube workflow for Franka synthetic
@@ -625,16 +692,33 @@ Two-cube full starts: {two_full['successful_episodes']}/{two_full['episodes']}
 
 Representative generation videos:
 
-- [2-cube full start](assets/generation/{generation_videos['2c-full-start-success']})
-- [2-cube one-preplaced continuation](assets/generation/{generation_videos['2c-1-preplaced-success']})
+{generation_video_embeds}
 
 Analysis:
 
-- [trajectory distribution](assets/analysis/trajectory_distribution.png)
-- [trajectory by cube count](assets/analysis/trajectory_by_blue_cube_count.png)
-- [workspace coverage](assets/analysis/workspace_coverage.png)
-- [progress stages](assets/analysis/progress_stage_statistics.png)
-- [failure causes](assets/analysis/failure_analysis.png)
+### Trajectory distribution
+
+![Trajectory distribution](assets/analysis/trajectory_distribution.png)
+
+### Trajectory by cube count
+
+![Trajectory by cube count](assets/analysis/trajectory_by_blue_cube_count.png)
+
+### Scenario statistics
+
+![Scenario statistics](assets/analysis/scenario_statistics.png)
+
+### Workspace coverage
+
+![Workspace coverage](assets/analysis/workspace_coverage.png)
+
+### Progress stages
+
+![Progress stages](assets/analysis/progress_stage_statistics.png)
+
+### Failure causes
+
+![Failure causes](assets/analysis/failure_analysis.png)
 
 ## LeRobot data contract
 
@@ -678,10 +762,21 @@ Evaluation seeds start at 10007 and 20007, independent of generation seed
 {generation_seed}. GR00T predicts 40 frames and Arena executes the first 16
 actions at 15 Hz before the next inference.
 
-| Task | Success | Failure |
-|---|---|---|
-| 1 cube | {arena_video_links("1-cube", "success")} | {arena_video_links("1-cube", "failure")} |
-| 2 cubes | {arena_video_links("2-cubes", "success")} | {arena_video_links("2-cubes", "failure")} |
+### 1 cube — success
+
+{arena_one_success}
+
+### 1 cube — failure
+
+{arena_one_failure}
+
+### 2 cubes — success
+
+{arena_two_success}
+
+### 2 cubes — failure
+
+{arena_two_failure}
 
 Serve the packaged result:
 
@@ -784,10 +879,10 @@ def main() -> None:
         "# Latest maximum-two-cube evidence\n\n"
         "| Stage | Assets |\n"
         "|---|---|\n"
-        "| Generation | two representative 2-cube success videos |\n"
+        "| Generation | two representative 2-cube videos plus inline GIF previews |\n"
         "| Analysis | trajectory, workspace, progress, and failure plots plus CSV/JSON |\n"
         "| SFT | first-checkpoint vs final-EMA attention (four matched samples each) |\n"
-        "| Arena | summary plus three success and three failure videos per task |\n\n"
+        "| Arena | summary plus three success and three failure MP4/GIF pairs per task |\n\n"
         f"Fixed-default-pose Arena: **2 cubes {two['successes']}/100 "
         f"({100.0 * float(two['success_rate']):.1f}%)**; "
         f"1 cube {one['successes']}/100 "

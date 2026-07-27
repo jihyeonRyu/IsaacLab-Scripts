@@ -427,8 +427,9 @@ two cubes.
 
 This copies plots, two generation examples, the four matched first/final
 attention pairs, and three success plus three failure videos per Arena task into
-`franka_groot_e2e/assets`. It also regenerates the result README. It does not
-commit, push, upload, or contact an external service.
+`franka_groot_e2e/assets`. It also creates compact full-episode GIF previews so
+all media renders inline in GitHub, then regenerates the result README. It does
+not commit, push, upload, or contact an external service.
 
 ```bash
 python3 \
@@ -455,9 +456,11 @@ Audit the packaged counts:
 ```bash
 find "${SCRIPTS_REPO}/franka_groot_e2e/assets/attention" -maxdepth 1 -name '*.png' | wc -l
 find "${SCRIPTS_REPO}/franka_groot_e2e/assets/arena" -maxdepth 1 -name '*.mp4' | wc -l
+find "${SCRIPTS_REPO}/franka_groot_e2e/assets" -name '*.gif' | wc -l
 ```
 
-The expected counts are eight attention PNGs and twelve Arena videos.
+The expected counts are eight attention PNGs, twelve Arena MP4s, and fourteen
+animated GIF previews (twelve Arena plus two generation).
 
 ## 11. Open the evaluation result
 

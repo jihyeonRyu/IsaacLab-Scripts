@@ -123,16 +123,47 @@ Two-cube full starts: 826/1032
 
 Representative generation videos:
 
-- [2-cube full start](assets/generation/2c-full-start-success-episode_000002-external.mp4)
-- [2-cube one-preplaced continuation](assets/generation/2c-1-preplaced-success-episode_000001-external.mp4)
+#### 2-cube full start
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/generation/2c-full-start-success-episode_000002-external.mp4" type="video/mp4">
+</video>
+
+![2-cube full start animated preview](assets/generation/2c-full-start-success-episode_000002-external.gif)
+
+#### 2-cube one-preplaced continuation
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/generation/2c-1-preplaced-success-episode_000001-external.mp4" type="video/mp4">
+</video>
+
+![2-cube one-preplaced continuation animated preview](assets/generation/2c-1-preplaced-success-episode_000001-external.gif)
 
 Analysis:
 
-- [trajectory distribution](assets/analysis/trajectory_distribution.png)
-- [trajectory by cube count](assets/analysis/trajectory_by_blue_cube_count.png)
-- [workspace coverage](assets/analysis/workspace_coverage.png)
-- [progress stages](assets/analysis/progress_stage_statistics.png)
-- [failure causes](assets/analysis/failure_analysis.png)
+### Trajectory distribution
+
+![Trajectory distribution](assets/analysis/trajectory_distribution.png)
+
+### Trajectory by cube count
+
+![Trajectory by cube count](assets/analysis/trajectory_by_blue_cube_count.png)
+
+### Scenario statistics
+
+![Scenario statistics](assets/analysis/scenario_statistics.png)
+
+### Workspace coverage
+
+![Workspace coverage](assets/analysis/workspace_coverage.png)
+
+### Progress stages
+
+![Progress stages](assets/analysis/progress_stage_statistics.png)
+
+### Failure causes
+
+![Failure causes](assets/analysis/failure_analysis.png)
 
 ## LeRobot data contract
 
@@ -168,17 +199,39 @@ training checkpoint and the final EMA checkpoint:
 
 ### First saved training checkpoint
 
-- [checkpoint-1000-ep0-step120](assets/attention/checkpoint-1000-ep0-step120.png)
-- [checkpoint-1000-ep1-step120](assets/attention/checkpoint-1000-ep1-step120.png)
-- [checkpoint-1000-ep2-step120](assets/attention/checkpoint-1000-ep2-step120.png)
-- [checkpoint-1000-ep3-step120](assets/attention/checkpoint-1000-ep3-step120.png)
+#### checkpoint-1000-ep0-step120
+
+![checkpoint-1000-ep0-step120](assets/attention/checkpoint-1000-ep0-step120.png)
+
+#### checkpoint-1000-ep1-step120
+
+![checkpoint-1000-ep1-step120](assets/attention/checkpoint-1000-ep1-step120.png)
+
+#### checkpoint-1000-ep2-step120
+
+![checkpoint-1000-ep2-step120](assets/attention/checkpoint-1000-ep2-step120.png)
+
+#### checkpoint-1000-ep3-step120
+
+![checkpoint-1000-ep3-step120](assets/attention/checkpoint-1000-ep3-step120.png)
 
 ### Final EMA checkpoint
 
-- [final-ema-episode-0-step-120](assets/attention/final-ema-episode-0-step-120.png)
-- [final-ema-episode-1-step-120](assets/attention/final-ema-episode-1-step-120.png)
-- [final-ema-episode-2-step-120](assets/attention/final-ema-episode-2-step-120.png)
-- [final-ema-episode-3-step-120](assets/attention/final-ema-episode-3-step-120.png)
+#### final-ema-episode-0-step-120
+
+![final-ema-episode-0-step-120](assets/attention/final-ema-episode-0-step-120.png)
+
+#### final-ema-episode-1-step-120
+
+![final-ema-episode-1-step-120](assets/attention/final-ema-episode-1-step-120.png)
+
+#### final-ema-episode-2-step-120
+
+![final-ema-episode-2-step-120](assets/attention/final-ema-episode-2-step-120.png)
+
+#### final-ema-episode-3-step-120
+
+![final-ema-episode-3-step-120](assets/attention/final-ema-episode-3-step-120.png)
 
 ## IsaacLab-Arena evaluation
 
@@ -188,10 +241,109 @@ Evaluation seeds start at 10007 and 20007, independent of generation seed
 91007. GR00T predicts 40 frames and Arena executes the first 16
 actions at 15 Hz before the next inference.
 
-| Task | Success | Failure |
-|---|---|---|
-| 1 cube | [1](assets/arena/1-cube-success-01-external.mp4) [2](assets/arena/1-cube-success-02-external.mp4) [3](assets/arena/1-cube-success-03-external.mp4) | [1](assets/arena/1-cube-failure-01-external.mp4) [2](assets/arena/1-cube-failure-02-external.mp4) [3](assets/arena/1-cube-failure-03-external.mp4) |
-| 2 cubes | [1](assets/arena/2-cubes-success-01-external.mp4) [2](assets/arena/2-cubes-success-02-external.mp4) [3](assets/arena/2-cubes-success-03-external.mp4) | [1](assets/arena/2-cubes-failure-01-external.mp4) [2](assets/arena/2-cubes-failure-02-external.mp4) [3](assets/arena/2-cubes-failure-03-external.mp4) |
+### 1 cube — success
+
+#### 1-cube success 1
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/1-cube-success-01-external.mp4" type="video/mp4">
+</video>
+
+![1-cube success 1 animated preview](assets/arena/1-cube-success-01-external.gif)
+
+#### 1-cube success 2
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/1-cube-success-02-external.mp4" type="video/mp4">
+</video>
+
+![1-cube success 2 animated preview](assets/arena/1-cube-success-02-external.gif)
+
+#### 1-cube success 3
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/1-cube-success-03-external.mp4" type="video/mp4">
+</video>
+
+![1-cube success 3 animated preview](assets/arena/1-cube-success-03-external.gif)
+
+### 1 cube — failure
+
+#### 1-cube failure 1
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/1-cube-failure-01-external.mp4" type="video/mp4">
+</video>
+
+![1-cube failure 1 animated preview](assets/arena/1-cube-failure-01-external.gif)
+
+#### 1-cube failure 2
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/1-cube-failure-02-external.mp4" type="video/mp4">
+</video>
+
+![1-cube failure 2 animated preview](assets/arena/1-cube-failure-02-external.gif)
+
+#### 1-cube failure 3
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/1-cube-failure-03-external.mp4" type="video/mp4">
+</video>
+
+![1-cube failure 3 animated preview](assets/arena/1-cube-failure-03-external.gif)
+
+### 2 cubes — success
+
+#### 2-cubes success 1
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/2-cubes-success-01-external.mp4" type="video/mp4">
+</video>
+
+![2-cubes success 1 animated preview](assets/arena/2-cubes-success-01-external.gif)
+
+#### 2-cubes success 2
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/2-cubes-success-02-external.mp4" type="video/mp4">
+</video>
+
+![2-cubes success 2 animated preview](assets/arena/2-cubes-success-02-external.gif)
+
+#### 2-cubes success 3
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/2-cubes-success-03-external.mp4" type="video/mp4">
+</video>
+
+![2-cubes success 3 animated preview](assets/arena/2-cubes-success-03-external.gif)
+
+### 2 cubes — failure
+
+#### 2-cubes failure 1
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/2-cubes-failure-01-external.mp4" type="video/mp4">
+</video>
+
+![2-cubes failure 1 animated preview](assets/arena/2-cubes-failure-01-external.gif)
+
+#### 2-cubes failure 2
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/2-cubes-failure-02-external.mp4" type="video/mp4">
+</video>
+
+![2-cubes failure 2 animated preview](assets/arena/2-cubes-failure-02-external.gif)
+
+#### 2-cubes failure 3
+
+<video controls muted preload="metadata" width="640">
+  <source src="assets/arena/2-cubes-failure-03-external.mp4" type="video/mp4">
+</video>
+
+![2-cubes failure 3 animated preview](assets/arena/2-cubes-failure-03-external.gif)
 
 Serve the packaged result:
 
