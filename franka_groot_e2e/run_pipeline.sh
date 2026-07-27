@@ -25,7 +25,11 @@ EVAL_OUTPUT="${EVAL_OUTPUT:-}"
 STATE_DIR="${STATE_DIR:-}"
 GENERATION_EPISODES="${GENERATION_EPISODES:-2000}"
 GENERATION_SEED="${GENERATION_SEED:-91007}"
-GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-128}"
+NUM_GPUS="${NUM_GPUS:-8}"
+GPU_IDS="${GPU_IDS:-}"
+NUM_ENVS_PER_GPU="${NUM_ENVS_PER_GPU:-4}"
+PER_GPU_BATCH_SIZE="${PER_GPU_BATCH_SIZE:-16}"
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE:-auto}"
 MAX_STEPS="${MAX_STEPS:-auto}"
 TARGET_DATA_PASSES="${TARGET_DATA_PASSES:-4.5}"
 SAVE_STEPS="${SAVE_STEPS:-1000}"
@@ -50,7 +54,7 @@ PRINT_CONFIG=0
 usage() {
     cat <<'EOF'
 Run the final Franka pipeline:
-  8-GPU generation -> analysis -> LeRobot -> 8-GPU GR00T SFT+EMA -> Arena
+  multi-GPU generation -> analysis -> LeRobot -> GR00T SFT+EMA -> Arena
   -> validated customer evidence and documentation.
 
 Usage:
@@ -77,7 +81,11 @@ Paths:
 Run settings:
   --generation-episodes N     Default: 2000 attempts
   --generation-seed N         Default: 91007
-  --global-batch-size N       Default: 128 across 8 GPUs
+  --num-gpus N                Default: 8, or NUM_GPUS from installer env
+  --gpu-ids CSV               Physical IDs; default: 0..NUM_GPUS-1
+  --num-envs-per-gpu N        Generation vector envs per GPU (default: 4)
+  --per-gpu-batch-size N      Used when global batch is auto (default: 16)
+  --global-batch-size auto|N  Default: NUM_GPUS × per-GPU batch
   --max-steps auto|N          Default: auto
   --target-data-passes VALUE  Default: 4.5 when max-steps=auto
   --experiment-name NAME
@@ -134,6 +142,10 @@ while [ "$#" -gt 0 ]; do
         --state-dir) need_value "$@"; STATE_DIR=$2; shift 2 ;;
         --generation-episodes) need_value "$@"; GENERATION_EPISODES=$2; shift 2 ;;
         --generation-seed) need_value "$@"; GENERATION_SEED=$2; shift 2 ;;
+        --num-gpus) need_value "$@"; NUM_GPUS=$2; shift 2 ;;
+        --gpu-ids) need_value "$@"; GPU_IDS=$2; shift 2 ;;
+        --num-envs-per-gpu) need_value "$@"; NUM_ENVS_PER_GPU=$2; shift 2 ;;
+        --per-gpu-batch-size) need_value "$@"; PER_GPU_BATCH_SIZE=$2; shift 2 ;;
         --global-batch-size) need_value "$@"; GLOBAL_BATCH_SIZE=$2; shift 2 ;;
         --max-steps) need_value "$@"; MAX_STEPS=$2; shift 2 ;;
         --target-data-passes) need_value "$@"; TARGET_DATA_PASSES=$2; shift 2 ;;
@@ -147,13 +159,19 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-for value_name in GENERATION_EPISODES GLOBAL_BATCH_SIZE SAVE_STEPS SAVE_TOTAL_LIMIT ACTION_HORIZON; do
+for value_name in GENERATION_EPISODES NUM_GPUS NUM_ENVS_PER_GPU PER_GPU_BATCH_SIZE SAVE_STEPS SAVE_TOTAL_LIMIT ACTION_HORIZON; do
     value="${!value_name}"
     if ! [[ "${value}" =~ ^[1-9][0-9]*$ ]]; then
         echo "${value_name} must be a positive integer, got ${value}" >&2
         exit 2
     fi
 done
+if [ "${GLOBAL_BATCH_SIZE}" = "auto" ]; then
+    GLOBAL_BATCH_SIZE=$((NUM_GPUS * PER_GPU_BATCH_SIZE))
+elif ! [[ "${GLOBAL_BATCH_SIZE}" =~ ^[1-9][0-9]*$ ]]; then
+    echo "GLOBAL_BATCH_SIZE must be auto or a positive integer" >&2
+    exit 2
+fi
 if ! [[ "${GENERATION_SEED}" =~ ^[0-9]+$ ]]; then
     echo "GENERATION_SEED must be a non-negative integer" >&2
     exit 2
@@ -162,10 +180,39 @@ if [ "${MAX_STEPS}" != "auto" ] && ! [[ "${MAX_STEPS}" =~ ^[1-9][0-9]*$ ]]; then
     echo "MAX_STEPS must be auto or a positive integer" >&2
     exit 2
 fi
-if [ "$((GLOBAL_BATCH_SIZE % 8))" -ne 0 ]; then
-    echo "GLOBAL_BATCH_SIZE must be divisible by 8" >&2
+if [ "${NUM_GPUS}" -gt 100 ]; then
+    echo "NUM_GPUS cannot exceed the fixed 100 Arena episodes per task" >&2
     exit 2
 fi
+if [ "$((GLOBAL_BATCH_SIZE % NUM_GPUS))" -ne 0 ]; then
+    echo "GLOBAL_BATCH_SIZE must be divisible by NUM_GPUS=${NUM_GPUS}" >&2
+    exit 2
+fi
+GPU_ID_ARRAY=()
+if [ -z "${GPU_IDS}" ]; then
+    for ((gpu_index = 0; gpu_index < NUM_GPUS; gpu_index++)); do
+        GPU_ID_ARRAY+=("${gpu_index}")
+    done
+else
+    IFS=',' read -r -a GPU_ID_ARRAY <<< "${GPU_IDS}"
+fi
+if [ "${#GPU_ID_ARRAY[@]}" -ne "${NUM_GPUS}" ]; then
+    echo "GPU_IDS must contain exactly ${NUM_GPUS} comma-separated IDs" >&2
+    exit 2
+fi
+declare -A SEEN_GPU_IDS=()
+for gpu_id in "${GPU_ID_ARRAY[@]}"; do
+    if ! [[ "${gpu_id}" =~ ^[0-9]+$ ]]; then
+        echo "Invalid physical GPU ID: ${gpu_id}" >&2
+        exit 2
+    fi
+    if [ -n "${SEEN_GPU_IDS[${gpu_id}]:-}" ]; then
+        echo "Duplicate physical GPU ID: ${gpu_id}" >&2
+        exit 2
+    fi
+    SEEN_GPU_IDS["${gpu_id}"]=1
+done
+GPU_IDS="$(IFS=','; echo "${GPU_ID_ARRAY[*]}")"
 if [ -n "${WAIT_FOR_PID}" ] && ! [[ "${WAIT_FOR_PID}" =~ ^[1-9][0-9]*$ ]]; then
     echo "WAIT_FOR_PID must be a positive integer" >&2
     exit 2
@@ -186,12 +233,12 @@ BASE_MODEL_PATH="$(realpath -m -- "${BASE_MODEL_PATH:-${MODELS_ROOT}/GR00T-N1.7-
 GROOT_COSMOS_MODEL_PATH="$(realpath -m -- "${GROOT_COSMOS_MODEL_PATH:-${MODELS_ROOT}/Cosmos-Reason2-2B}")"
 HF_HOME="$(realpath -m -- "${HF_HOME:-${MODELS_ROOT}/huggingface-cache}")"
 FFMPEG_RUNTIME="$(realpath -m -- "${FFMPEG_RUNTIME:-${WORKSPACE_ROOT}/.tools/ffmpeg-7}")"
-ISAAC_PYTHON="$(normalize_executable_path "${ISAAC_PYTHON:-${WORKSPACE_ROOT}/env_isaaclab/bin/python}")"
+ISAAC_PYTHON="$(normalize_executable_path "${ISAAC_PYTHON:-/isaac-sim/python.sh}")"
 ARENA_PYTHON="$(normalize_executable_path "${ARENA_PYTHON:-${ISAAC_PYTHON}}")"
 GROOT_PYTHON="$(normalize_executable_path "${GROOT_PYTHON:-${GROOT_REPO}/.venv/bin/python}")"
 RAW_DATASET="$(realpath -m -- "${RAW_DATASET:-${WORKSPACE_ROOT}/output/franka_max2_robust_${GENERATION_EPISODES}eps_seed${GENERATION_SEED}}")"
 LEROBOT_DATASET="$(realpath -m -- "${LEROBOT_DATASET:-${WORKSPACE_ROOT}/datasets/franka_max2_robust_seed${GENERATION_SEED}_lerobot}")"
-EVAL_OUTPUT="$(realpath -m -- "${EVAL_OUTPUT:-${ARENA_REPO}/outputs/franka-gr00t-parallel/max2-robust-2000-ema-default-start-8gpu-100eps}")"
+EVAL_OUTPUT="$(realpath -m -- "${EVAL_OUTPUT:-${ARENA_REPO}/outputs/franka-gr00t-parallel/max2-robust-${GENERATION_EPISODES}-ema-default-start-${NUM_GPUS}gpu-100eps}")"
 STATE_DIR="$(realpath -m -- "${STATE_DIR:-${WORKSPACE_ROOT}/output/franka_e2e_pipeline_final}")"
 RUN_DIR="${GROOT_REPO}/outputs/franka-groot-sft/${EXPERIMENT_NAME}"
 ATTENTION_DIR="${GROOT_REPO}/outputs/attention/${EXPERIMENT_NAME}"
@@ -203,12 +250,13 @@ Resolved final Franka pipeline
   scripts/GR00T/Arena: ${SCRIPTS_REPO} / ${GROOT_REPO} / ${ARENA_REPO}
   raw dataset        : ${RAW_DATASET}
   LeRobot dataset    : ${LEROBOT_DATASET}
-  generation         : ${GENERATION_EPISODES} attempts, seed ${GENERATION_SEED}, 8 GPUs x 4 envs
+  generation         : ${GENERATION_EPISODES} attempts, seed ${GENERATION_SEED}, ${NUM_GPUS} GPUs x ${NUM_ENVS_PER_GPU} envs
+  physical GPU IDs    : ${GPU_IDS}
   scenario mix       : 1c=25%; 2c=75%; 2c one-preplaced=30%
   partial start      : XY radius=0-5cm; Z clearance=12-20cm; yaw=-45..45deg
   trajectory mix     : direct=90%; pre-grasp near-cube recovery=10%
   experiment         : ${EXPERIMENT_NAME}
-  batch              : ${GLOBAL_BATCH_SIZE} global ($((GLOBAL_BATCH_SIZE / 8)) per GPU)
+  batch              : ${GLOBAL_BATCH_SIZE} global ($((GLOBAL_BATCH_SIZE / NUM_GPUS)) per GPU)
   steps              : ${MAX_STEPS} (target passes=${TARGET_DATA_PASSES})
   checkpoints        : every ${SAVE_STEPS}; retain ${SAVE_TOTAL_LIMIT}; final EMA only after completion
   augmentation       : crop=${CROP_FRACTION}; jitter=${COLOR_JITTER_PARAMS}; state dropout=${STATE_DROPOUT_PROB}
@@ -249,6 +297,20 @@ if [ "$(git -C "${ARENA_REPO}" branch --show-current)" != "${ARENA_BRANCH}" ]; t
     echo "Arena repo must be on ${ARENA_BRANCH}" >&2
     exit 2
 fi
+mapfile -t AVAILABLE_GPU_ID_ARRAY < <(
+    nvidia-smi --query-gpu=index --format=csv,noheader,nounits 2>/dev/null |
+        sed '/^[[:space:]]*$/d; s/[[:space:]]//g'
+)
+declare -A AVAILABLE_GPU_IDS=()
+for gpu_id in "${AVAILABLE_GPU_ID_ARRAY[@]}"; do
+    AVAILABLE_GPU_IDS["${gpu_id}"]=1
+done
+for gpu_id in "${GPU_ID_ARRAY[@]}"; do
+    if [ -z "${AVAILABLE_GPU_IDS[${gpu_id}]:-}" ]; then
+        echo "Requested GPU ID ${gpu_id} is not visible to nvidia-smi" >&2
+        exit 2
+    fi
+done
 if [ ! -x "${FFMPEG_RUNTIME}/bin/ffmpeg" ]; then
     echo "FFmpeg runtime is missing: ${FFMPEG_RUNTIME}/bin/ffmpeg" >&2
     exit 2
@@ -310,14 +372,14 @@ if [ ! -f "${STATE_DIR}/generation.done" ]; then
             echo "Refusing incomplete non-empty raw dataset: ${RAW_DATASET}" >&2
             exit 2
         fi
-        status "starting 8-GPU generation: ${GENERATION_EPISODES} attempts"
+        status "starting ${NUM_GPUS}-GPU generation: ${GENERATION_EPISODES} attempts"
         "${ISAAC_PYTHON}" \
             "${SCRIPTS_REPO}/franka_groot_e2e/scripts/01_generate/franka_lift_auto_parallel.py" \
             --headless \
             --enable_cameras \
-            --num_envs 4 \
+            --num_envs "${NUM_ENVS_PER_GPU}" \
             --auto_generate_episodes "${GENERATION_EPISODES}" \
-            --gpu_ids 0 1 2 3 4 5 6 7 \
+            --gpu_ids "${GPU_ID_ARRAY[@]}" \
             --asset_version_override 5.1 \
             --sensor_modalities rgb \
             --output_dir "${RAW_DATASET}" \
@@ -487,7 +549,7 @@ if [ ! -f "${STATE_DIR}/sft.done" ]; then
         echo "Refusing non-empty SFT output without completion marker: ${RUN_DIR}" >&2
         exit 2
     fi
-    status "starting 8-GPU SFT with EMA"
+    status "starting ${NUM_GPUS}-GPU SFT with EMA"
     rm -rf -- "${ATTENTION_DIR}"
     mkdir -p "${ATTENTION_DIR}"
     DATASET_PATH="${LEROBOT_DATASET}" \
@@ -497,7 +559,8 @@ if [ ! -f "${STATE_DIR}/sft.done" ]; then
     HF_HOME="${HF_HOME}" \
     GROOT_COSMOS_MODEL_PATH="${GROOT_COSMOS_MODEL_PATH}" \
     EXPERIMENT_NAME="${EXPERIMENT_NAME}" \
-    NUM_GPUS=8 \
+    CUDA_VISIBLE_DEVICES="${GPU_IDS}" \
+    NUM_GPUS="${NUM_GPUS}" \
     GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE}" \
     MAX_STEPS="${MAX_STEPS}" \
     SAVE_STEPS="${SAVE_STEPS}" \
@@ -541,7 +604,7 @@ if [ ! -f "${STATE_DIR}/ema_attention.done" ]; then
     fi
     for episode in ${DEBUG_VIS_EPISODES}; do
         output="${ATTENTION_DIR}/final-ema-episode-${episode}-step-120.png"
-        WANDB_MODE=offline "${GROOT_PYTHON}" \
+        CUDA_VISIBLE_DEVICES="${GPU_ID_ARRAY[0]}" WANDB_MODE=offline "${GROOT_PYTHON}" \
             "${GROOT_REPO}/tools/visualize_franka_attention.py" \
             --dataset "${LEROBOT_DATASET}" \
             --checkpoint "${CHECKPOINT}" \
@@ -566,11 +629,12 @@ if [ ! -f "${STATE_DIR}/arena_eval.done" ]; then
         echo "Refusing non-empty Arena output: ${EVAL_OUTPUT}" >&2
         exit 2
     fi
-    status "starting default-start 8-GPU Arena evaluation: 100 episodes/task"
-    "${ARENA_REPO}/.venv/bin/python" \
+    status "starting default-start ${NUM_GPUS}-GPU Arena evaluation: 100 episodes/task"
+    "${GROOT_PYTHON}" \
         "${ARENA_REPO}/isaaclab_arena_gr00t/parallel_evaluation.py" \
         --checkpoint "${CHECKPOINT}" \
-        --num-gpus 8 \
+        --num-gpus "${NUM_GPUS}" \
+        --gpu-ids "${GPU_IDS}" \
         --episodes-per-task 100 \
         --task franka_blue_tray_1_cube \
         --task franka_blue_tray_2_cubes \
@@ -612,6 +676,8 @@ if [ ! -f "${STATE_DIR}/finalization.done" ]; then
         --experiment-name "${EXPERIMENT_NAME}" \
         --generation-attempts "${GENERATION_EPISODES}" \
         --generation-seed "${GENERATION_SEED}" \
+        --num-gpus "${NUM_GPUS}" \
+        --num-envs-per-gpu "${NUM_ENVS_PER_GPU}" \
         --global-batch-size "${GLOBAL_BATCH_SIZE}"
     test -f "${SCRIPTS_REPO}/franka_groot_e2e/assets/arena/summary.json"
     test -f "${SCRIPTS_REPO}/franka_groot_e2e/README.md"

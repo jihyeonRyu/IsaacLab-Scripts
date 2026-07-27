@@ -28,6 +28,7 @@ FINAL_ATTENTION_PATTERN = re.compile(
     r"^final-ema-episode-(?P<episode>\d+)-step-(?P<step>\d+)\.png$"
 )
 REPRESENTATIVE_COUNT = 3
+REQUIRED_BASE_IMAGE = "nvcr.io/nvidia/isaac-lab:3.0.0-beta2-post1"
 TASK_LABELS = {
     "franka_blue_tray_1_cube": "1 blue cube",
     "franka_blue_tray_2_cubes": "2 blue cubes",
@@ -52,6 +53,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--generation-attempts", type=int, default=2000)
     parser.add_argument("--generation-seed", type=int, default=91007)
+    parser.add_argument("--num-gpus", type=int, default=8)
+    parser.add_argument("--num-envs-per-gpu", type=int, default=4)
     parser.add_argument("--global-batch-size", type=int, default=128)
     return parser.parse_args()
 
@@ -445,6 +448,8 @@ def render_readme(
     experiment_name: str,
     attempts: int,
     generation_seed: int,
+    num_gpus: int,
+    num_envs_per_gpu: int,
     global_batch_size: int,
     training_runtime: str | None,
 ) -> str:
@@ -503,9 +508,11 @@ evaluation.
 
 ## Latest validated result
 
-The final Arena run uses 100 independent episodes per task, eight GPUs,
+The final Arena run uses 100 independent episodes per task, {num_gpus} GPUs,
 generation-matched camera/object/tray/lighting settings, distinct evaluation
-seeds, and checkpoint `{checkpoint}`.
+seeds, and checkpoint `{checkpoint}`. The published validation used eight
+NVIDIA RTX PRO 6000 Blackwell Server Edition GPUs with approximately 96 GiB
+VRAM each.
 
 | Task | Successes | Episodes | Success rate |
 |---|---:|---:|---:|
@@ -514,32 +521,71 @@ seeds, and checkpoint `{checkpoint}`.
 
 Machine-readable results: [assets/arena/summary.json](assets/arena/summary.json).
 
-## Install
+## Container and install
 
-Use the NVIDIA Isaac Lab container with eight CUDA GPUs:
+Run the workflow inside the pinned NVIDIA NGC base image:
+
+```text
+{REQUIRED_BASE_IMAGE}
+```
+
+This is a standard Docker deployment; Brev is not required. On a compatible
+Linux Docker host with NVIDIA Container Toolkit installed:
 
 ```bash
+export HOST_WORKSPACE="$PWD/franka-workspace"
+mkdir -p "${{HOST_WORKSPACE}}"
+docker pull {REQUIRED_BASE_IMAGE}
+docker run -d --name franka-groot-e2e --restart unless-stopped \\
+  --gpus all \\
+  --network host \\
+  --ipc host \\
+  --shm-size 32g \\
+  -e OMNI_KIT_ACCEPT_EULA=YES \\
+  -e ACCEPT_EULA=Y \\
+  -e PRIVACY_CONSENT=Y \\
+  -v "${{HOST_WORKSPACE}}:/workspace" \\
+  {REQUIRED_BASE_IMAGE} bash -lc "sleep infinity"
+docker exec -it franka-groot-e2e bash
+```
+
+Then, inside the container:
+
+```bash
+git clone https://github.com/jihyeonRyu/IsaacLab-Scripts.git \\
+  /workspace/IsaacLab-Scripts
 bash /workspace/IsaacLab-Scripts/franka_groot_e2e/install_franka_groot_e2e.sh \\
   --workspace-root /workspace \\
+  --num-gpus auto \\
   --accept-eula
-```
-
-The installer accepts custom `--scripts-repo`, `--groot-repo`, `--arena-repo`,
-and `--models-root` paths. It creates isolated Isaac Lab, GR00T, and Arena
-environments and downloads public GR00T N1.7 3B and Cosmos Reason2 2B weights.
-W&B authentication remains explicit:
-
-```bash
+source /workspace/franka_groot_env.sh
 /workspace/Isaac-GR00T/.venv/bin/wandb login
 ```
+
+The installer verifies Isaac Sim 6.0.1 and Isaac Lab 3.0.0 from the image and
+does not reinstall them. Isaac and Arena use the bundled `/isaac-sim/python.sh`
+runtime; Arena-only dependencies live in a workspace-local user site, while
+GR00T uses its own workspace venv. It auto-detects visible GPUs, accepts
+`--num-gpus` and `--gpu-ids`, and downloads the public GR00T N1.7 3B and Cosmos
+Reason2 2B weights. A non-container pip fallback requires the explicit
+`--isaac-mode pip` option and is not the customer reference environment.
 
 ## Run end to end
 
 ```bash
+source /workspace/franka_groot_env.sh
 nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/run_pipeline.sh \\
   --workspace-root /workspace \\
+  --num-gpus "${{NUM_GPUS}}" \\
+  --gpu-ids "${{GPU_IDS}}" \\
   > /workspace/output/franka_final_pipeline.log 2>&1 &
 ```
+
+Generation, SFT, and Arena parallelism all follow `--num-gpus` and
+`--gpu-ids`. Generation also accepts `--num-envs-per-gpu`; SFT accepts
+`--per-gpu-batch-size` or an explicit divisible `--global-batch-size`. The
+default 16 samples/GPU is the published 96 GiB setting; use 2–4 as the initial
+value on 44–48 GiB GPUs.
 
 The restart-safe stages are generation, analysis, LeRobot conversion, coverage
 planning, SFT, final EMA attention, maximum-two-cube Arena evaluation, final
@@ -554,7 +600,7 @@ not duplicated in this repository.
 ## Synthetic generation
 
 - attempts / seed: `{attempts}` / `{generation_seed}`;
-- 8 GPUs × 4 vector environments, 15 FPS, 320×256 RGB;
+- {num_gpus} GPUs × {num_envs_per_gpu} vector environments, 15 FPS, 320×256 RGB;
 - `external` and `wrist` cameras;
 - one/two cube mix 25/75%;
 - two-cube one-preplaced continuation probability 30%;
@@ -609,7 +655,7 @@ Dataset: {dataset_info['total_episodes']} successful episodes,
 | Setting | Value |
 |---|---|
 | Experiment | `{experiment_name}` |
-| GPUs / global batch | 8 / {global_batch_size} |
+| GPUs / global batch | {num_gpus} / {global_batch_size} |
 | Steps | {max_steps} |
 | Valid windows | {valid_windows} |
 | Nominal data passes | {nominal_passes} |
@@ -677,7 +723,8 @@ def main() -> None:
         args.arena_output
         or workspace
         / "IsaacLab-Arena/outputs/franka-gr00t-parallel/"
-        "max2-robust-2000-ema-default-start-8gpu-100eps"
+        f"max2-robust-{args.generation_attempts}-ema-default-start-"
+        f"{args.num_gpus}gpu-100eps"
     ).resolve()
     state_dir = (
         args.state_dir or workspace / "output/franka_e2e_pipeline_final"
@@ -696,14 +743,20 @@ def main() -> None:
     generation_videos = package_generation(raw_dataset, assets / "generation")
     attention_names = package_attention(attention_dir, assets / "attention")
     arena_summary = package_arena(arena_output, assets / "arena")
+    arena_manifest = read_json(arena_output / "parallel_eval_manifest.json")
+    manifest_gpu_ids = arena_manifest.get("gpu_ids", [])
+    if len(manifest_gpu_ids) != args.num_gpus:
+        raise RuntimeError(
+            f"Arena manifest has {len(manifest_gpu_ids)} GPUs, expected {args.num_gpus}"
+        )
 
     training_runtime = stage_duration(
         state_dir / "status.log",
-        "starting 8-GPU SFT with EMA",
+        f"starting {args.num_gpus}-GPU SFT with EMA",
         "rendering final EMA attention for the same four checkpoint probes",
     ) or stage_duration(
         state_dir / "status.log",
-        "starting 8-GPU SFT with EMA",
+        f"starting {args.num_gpus}-GPU SFT with EMA",
         "rendering four continuation-aware final EMA attention samples",
     )
     readme = render_readme(
@@ -717,6 +770,8 @@ def main() -> None:
         experiment_name=args.experiment_name,
         attempts=args.generation_attempts,
         generation_seed=args.generation_seed,
+        num_gpus=args.num_gpus,
+        num_envs_per_gpu=args.num_envs_per_gpu,
         global_batch_size=args.global_batch_size,
         training_runtime=training_runtime,
     )
@@ -747,9 +802,15 @@ def main() -> None:
         "- step-by-step runbook: "
         "`/workspace/IsaacLab-Scripts/franka_groot_e2e/STEP_BY_STEP.md`\n"
         "- repository: `jihyeonRyu/IsaacLab-Scripts`, branch `main`\n\n"
+        "## Customer runtime\n\n"
+        f"- standard Docker host; Brev is not required\n"
+        f"- pinned base image: `{REQUIRED_BASE_IMAGE}`\n"
+        f"- GPU count and physical IDs are configurable\n"
+        f"- validated hardware: 8 RTX PRO 6000 Blackwell Server Edition GPUs "
+        f"(~96 GiB each)\n\n"
         "## Latest validated scope\n\n"
-        "Maximum two blue cubes; fixed default Franka evaluation start; eight GPUs; "
-        "independent seeds; 100 episodes per task.\n\n"
+        f"Maximum two blue cubes; fixed default Franka evaluation start; "
+        f"{args.num_gpus} GPUs; independent seeds; 100 episodes per task.\n\n"
         "| Task | Successes | Episodes | Success rate |\n"
         "|---|---:|---:|---:|\n"
         f"| 1 blue cube | {one['successes']} | 100 | "
@@ -773,6 +834,8 @@ def main() -> None:
                 "lerobot_episodes": dataset_info["total_episodes"],
                 "checkpoint": str(checkpoint),
                 "arena": arena_summary,
+                "num_gpus": args.num_gpus,
+                "gpu_ids": manifest_gpu_ids,
                 "assets": str(assets),
             },
             indent=2,

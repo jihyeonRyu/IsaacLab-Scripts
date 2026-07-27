@@ -4,21 +4,20 @@ This runbook reproduces the validated maximum-two-blue-cube experiment one
 stage at a time. For an unattended run, use `run_pipeline.sh` from the main
 [README](README.md). Do not mix output directories from different experiments.
 
-## 0. Requirements
+## 0. Docker host requirements
 
-- NVIDIA Isaac Lab-compatible Linux container
-- eight visible CUDA GPUs
-- Python 3.12 at `/usr/bin/python3`
-- enough local storage for raw video, LeRobot data, checkpoints, and Arena video
-- W&B account for online SFT logging
+The customer environment is a standard Linux Docker host; Brev is not required.
+Use the pinned base image `nvcr.io/nvidia/isaac-lab:3.0.0-beta2-post1` so that
+Isaac Sim 6.0.1 and Isaac Lab 3.0.0 match the validated software baseline.
 
-Check the container before installation:
+Host requirements:
 
-```bash
-nvidia-smi
-python3 --version
-df -h /workspace
-```
+- x86_64 Linux with a compatible NVIDIA driver;
+- Docker Engine and NVIDIA Container Toolkit;
+- one or more visible CUDA GPUs;
+- W&B account for online SFT logging;
+- persistent local storage mounted at `/workspace` inside the container. The
+  complete validated run used more than 350 GB; 1 TB is recommended.
 
 The maintained source branches are:
 
@@ -28,37 +27,85 @@ The maintained source branches are:
 | GR00T SFT | `jihyeonRyu/Isaac-GR00T` | `jryu/franka-demo` |
 | Arena evaluation | `jihyeonRyu/IsaacLab-Arena` | `jryu/franka-demo` |
 
-## 1. Install
+## 1. Start the pinned Docker container and install
 
-The installer accepts a customer-selected workspace root. It creates isolated
-Isaac Lab, GR00T, and Arena environments and downloads the public GR00T N1.7 3B
-and Cosmos Reason2 2B models.
+On the customer Docker host, create a persistent workspace and start a detached
+container. The detached container keeps running if the SSH or terminal session
+is closed.
 
 ```bash
-export WORKSPACE_ROOT=/workspace
+export HOST_WORKSPACE="$PWD/franka-workspace"
+mkdir -p "${HOST_WORKSPACE}"
 
-bash "${WORKSPACE_ROOT}/IsaacLab-Scripts/franka_groot_e2e/install_franka_groot_e2e.sh" \
-  --workspace-root "${WORKSPACE_ROOT}" \
+docker pull nvcr.io/nvidia/isaac-lab:3.0.0-beta2-post1
+docker run -d --name franka-groot-e2e --restart unless-stopped \
+  --gpus all \
+  --network host \
+  --ipc host \
+  --shm-size 32g \
+  -e OMNI_KIT_ACCEPT_EULA=YES \
+  -e ACCEPT_EULA=Y \
+  -e PRIVACY_CONSENT=Y \
+  -v "${HOST_WORKSPACE}:/workspace" \
+  nvcr.io/nvidia/isaac-lab:3.0.0-beta2-post1 \
+  bash -lc "sleep infinity"
+
+docker exec -it franka-groot-e2e bash
+```
+
+If `docker pull` requests NGC credentials, log in to `nvcr.io` with user
+`$oauthtoken` and an NGC API key. GR00T and Cosmos model downloads themselves
+are public and do not require a Hugging Face token.
+
+Run the following commands inside the container:
+
+```bash
+nvidia-smi
+test -x /isaac-sim/python.sh
+test -x /workspace/isaaclab/isaaclab.sh
+cat /isaac-sim/VERSION
+cat /workspace/isaaclab/VERSION
+
+git clone https://github.com/jihyeonRyu/IsaacLab-Scripts.git \
+  /workspace/IsaacLab-Scripts
+
+bash /workspace/IsaacLab-Scripts/franka_groot_e2e/install_franka_groot_e2e.sh \
+  --workspace-root /workspace \
+  --num-gpus auto \
   --accept-eula
 ```
+
+The installer refuses the wrong container layout, reuses the bundled Isaac
+runtime without reinstalling Isaac Sim/Lab, installs Arena runtime dependencies
+in a workspace-local Python user site, creates an isolated GR00T venv, clones
+the maintained branches, and downloads both public models. Custom internal
+paths can be supplied with `--scripts-repo`, `--groot-repo`, `--arena-repo`, and
+`--models-root`.
 
 Load the generated paths and authenticate W&B:
 
 ```bash
-source "${WORKSPACE_ROOT}/franka_groot_env.sh"
-"${GROOT_REPO}/.venv/bin/wandb" login
-"${GROOT_REPO}/.venv/bin/wandb" login --verify
+source /workspace/franka_groot_env.sh
+"${GROOT_PYTHON}" -m wandb login
+"${GROOT_PYTHON}" -m wandb login --verify
 ```
 
-Verify the three source branches and model files:
+Verify the selected GPUs, branches, and model files:
 
 ```bash
+echo "NUM_GPUS=${NUM_GPUS} GPU_IDS=${GPU_IDS}"
 git -C "${SCRIPTS_REPO}" branch --show-current
 git -C "${GROOT_REPO}" branch --show-current
 git -C "${ARENA_REPO}" branch --show-current
 test -f "${BASE_MODEL_PATH}/config.json"
 test -f "${GROOT_COSMOS_MODEL_PATH}/config.json"
 ```
+
+For a subset or non-default physical GPU IDs, rerun the installer with, for
+example, `--num-gpus 4 --gpu-ids 0,2,4,6`. All later stages reuse those values.
+The reference result used 8 RTX PRO 6000 Blackwell Server Edition GPUs with
+approximately 96 GiB VRAM each. On a 44–48 GiB GPU, begin with a per-GPU SFT
+batch of 2–4 and increase only after a smoke test.
 
 ## 2. Define one experiment
 
@@ -69,14 +116,19 @@ source /workspace/franka_groot_env.sh
 
 export GENERATION_EPISODES=2000
 export GENERATION_SEED=91007
+export NUM_ENVS_PER_GPU=4
+export PER_GPU_BATCH_SIZE=16
+export GLOBAL_BATCH_SIZE=$((NUM_GPUS * PER_GPU_BATCH_SIZE))
+export MAX_STEPS=25000
 export EXPERIMENT_NAME=franka-blue-cube-max2-robust-2000-ema
-export RAW_DATASET="${WORKSPACE_ROOT}/output/franka_max2_robust_2000eps_seed91007"
-export LEROBOT_DATASET="${WORKSPACE_ROOT}/datasets/franka_max2_robust_seed91007_lerobot"
+export RAW_DATASET="${WORKSPACE_ROOT}/output/franka_max2_robust_${GENERATION_EPISODES}eps_seed${GENERATION_SEED}"
+export LEROBOT_DATASET="${WORKSPACE_ROOT}/datasets/franka_max2_robust_seed${GENERATION_SEED}_lerobot"
 export STATE_DIR="${WORKSPACE_ROOT}/output/franka_e2e_pipeline_final"
 export RUN_DIR="${GROOT_REPO}/outputs/franka-groot-sft/${EXPERIMENT_NAME}"
-export CHECKPOINT="${RUN_DIR}/checkpoint-25000-ema"
+export CHECKPOINT="${RUN_DIR}/checkpoint-${MAX_STEPS}-ema"
 export ATTENTION_DIR="${GROOT_REPO}/outputs/attention/${EXPERIMENT_NAME}"
-export EVAL_OUTPUT="${ARENA_REPO}/outputs/franka-gr00t-parallel/max2-robust-2000-ema-default-start-8gpu-100eps"
+export EVAL_OUTPUT="${ARENA_REPO}/outputs/franka-gr00t-parallel/max2-robust-${GENERATION_EPISODES}-ema-default-start-${NUM_GPUS}gpu-100eps"
+IFS=, read -r -a GPU_ID_ARRAY <<< "${GPU_IDS}"
 
 mkdir -p "${STATE_DIR}"
 ```
@@ -86,6 +138,10 @@ Before a full run, inspect every resolved path without changing data:
 ```bash
 bash "${SCRIPTS_REPO}/franka_groot_e2e/run_pipeline.sh" \
   --workspace-root "${WORKSPACE_ROOT}" \
+  --num-gpus "${NUM_GPUS}" \
+  --gpu-ids "${GPU_IDS}" \
+  --num-envs-per-gpu "${NUM_ENVS_PER_GPU}" \
+  --per-gpu-batch-size "${PER_GPU_BATCH_SIZE}" \
   --print-config
 ```
 
@@ -102,9 +158,9 @@ The output path must be new or empty.
   "${SCRIPTS_REPO}/franka_groot_e2e/scripts/01_generate/franka_lift_auto_parallel.py" \
   --headless \
   --enable_cameras \
-  --num_envs 4 \
+  --num_envs "${NUM_ENVS_PER_GPU}" \
   --auto_generate_episodes "${GENERATION_EPISODES}" \
-  --gpu_ids 0 1 2 3 4 5 6 7 \
+  --gpu_ids "${GPU_ID_ARRAY[@]}" \
   --asset_version_override 5.1 \
   --sensor_modalities rgb \
   --output_dir "${RAW_DATASET}" \
@@ -141,17 +197,18 @@ The output path must be new or empty.
   --solver_recovery_max_attempts 1
 ```
 
-Validate all eight workers before continuing:
+Validate every selected worker before continuing:
 
 ```bash
-"${ISAAC_PYTHON}" - "${RAW_DATASET}/multi_gpu_summary.json" <<'PY'
+"${ISAAC_PYTHON}" - "${RAW_DATASET}/multi_gpu_summary.json" "${GENERATION_EPISODES}" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 summary = json.loads(Path(sys.argv[1]).read_text())
-assert summary["requested_episodes"] == 2000, summary
-assert summary["reported_episodes"] == 2000, summary
+expected = int(sys.argv[2])
+assert summary["requested_episodes"] == expected, summary
+assert summary["reported_episodes"] == expected, summary
 assert summary["all_workers_exited_cleanly"] is True, summary
 print(json.dumps(summary, indent=2))
 PY
@@ -207,8 +264,10 @@ The validated dataset contains 1,757 episodes, 754,545 frames at 15 FPS, and
 
 ## 6. Audit frame coverage and choose SFT steps
 
-The audit prevents choosing steps from episode count alone. With global batch
-128, the validated dataset needs 5,360 optimizer steps for one nominal pass.
+The audit prevents choosing steps from episode count alone. The validated
+8-GPU/global-batch-128 run needs 5,360 optimizer steps for one nominal pass.
+When GPU count or per-GPU batch changes, rerun this audit and target at least
+4.5 nominal passes; `run_pipeline.sh --max-steps auto` performs that calculation.
 
 ```bash
 "${GROOT_PYTHON}" \
@@ -217,18 +276,18 @@ The audit prevents choosing steps from episode count alone. With global batch
   --action-horizon 40 \
   --shard-size 512 \
   --episode-sampling-rate 0.1 \
-  --global-batch-size 128 \
-  --max-steps 25000 \
+  --global-batch-size "${GLOBAL_BATCH_SIZE}" \
+  --max-steps "${MAX_STEPS}" \
   --output "${STATE_DIR}/frame_coverage_audit.json" \
   --format json
 
 "${GROOT_PYTHON}" -m json.tool "${STATE_DIR}/frame_coverage_audit.json"
 ```
 
-Twenty-five thousand steps correspond to about 4.66 nominal data passes for
-this dataset.
+For the published global batch 128 run, 25,000 steps correspond to about 4.66
+nominal data passes. Keep data passes comparable when changing batch size.
 
-## 7. Train GR00T on eight GPUs
+## 7. Train GR00T on the selected GPUs
 
 The four debug probes below are the validated continuation-aware samples. For a
 custom dataset, choose four episodes longer than frame 160 and keep the same
@@ -245,9 +304,10 @@ OUTPUT_DIR="${GROOT_REPO}/outputs/franka-groot-sft" \
 HF_HOME="${HF_HOME}" \
 GROOT_COSMOS_MODEL_PATH="${GROOT_COSMOS_MODEL_PATH}" \
 EXPERIMENT_NAME="${EXPERIMENT_NAME}" \
-NUM_GPUS=8 \
-GLOBAL_BATCH_SIZE=128 \
-MAX_STEPS=25000 \
+CUDA_VISIBLE_DEVICES="${GPU_IDS}" \
+NUM_GPUS="${NUM_GPUS}" \
+GLOBAL_BATCH_SIZE="${GLOBAL_BATCH_SIZE}" \
+MAX_STEPS="${MAX_STEPS}" \
 SAVE_STEPS=1000 \
 SAVE_TOTAL_LIMIT=2 \
 LEARNING_RATE=1e-4 \
@@ -292,7 +352,7 @@ Render the same four episode/frame samples at the final EMA checkpoint:
 
 ```bash
 for episode in ${DEBUG_VIS_EPISODES}; do
-  WANDB_MODE=offline "${GROOT_PYTHON}" \
+  CUDA_VISIBLE_DEVICES="${GPU_ID_ARRAY[0]}" WANDB_MODE=offline "${GROOT_PYTHON}" \
     "${GROOT_REPO}/tools/visualize_franka_attention.py" \
     --dataset "${LEROBOT_DATASET}" \
     --checkpoint "${CHECKPOINT}" \
@@ -303,7 +363,7 @@ for episode in ${DEBUG_VIS_EPISODES}; do
     --output "${ATTENTION_DIR}/final-ema-episode-${episode}-step-120.png" \
     --wandb-project franka-groot-sft \
     --wandb-run-name "${EXPERIMENT_NAME}-ema-debug-ep${episode}" \
-    --global-step 25000 \
+    --global-step "${MAX_STEPS}" \
     --full-reasoner-model "${GROOT_COSMOS_MODEL_PATH}"
 done
 ```
@@ -325,10 +385,11 @@ predicts 40 actions; Arena executes 16 at 15 Hz before the next inference.
 The output path must be new or empty.
 
 ```bash
-"${ARENA_REPO}/.venv/bin/python" \
+"${GROOT_PYTHON}" \
   "${ARENA_REPO}/isaaclab_arena_gr00t/parallel_evaluation.py" \
   --checkpoint "${CHECKPOINT}" \
-  --num-gpus 8 \
+  --num-gpus "${NUM_GPUS}" \
+  --gpu-ids "${GPU_IDS}" \
   --episodes-per-task 100 \
   --task franka_blue_tray_1_cube \
   --task franka_blue_tray_2_cubes \
@@ -384,7 +445,9 @@ python3 \
   --experiment-name "${EXPERIMENT_NAME}" \
   --generation-attempts "${GENERATION_EPISODES}" \
   --generation-seed "${GENERATION_SEED}" \
-  --global-batch-size 128
+  --num-gpus "${NUM_GPUS}" \
+  --num-envs-per-gpu "${NUM_ENVS_PER_GPU}" \
+  --global-batch-size "${GLOBAL_BATCH_SIZE}"
 ```
 
 Audit the packaged counts:

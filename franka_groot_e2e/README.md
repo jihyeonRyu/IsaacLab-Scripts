@@ -6,9 +6,11 @@ evaluation.
 
 ## Latest validated result
 
-The final Arena run uses 100 independent episodes per task, eight GPUs,
+The final Arena run uses 100 independent episodes per task, 8 GPUs,
 generation-matched camera/object/tray/lighting settings, distinct evaluation
-seeds, and checkpoint `/workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-max2-robust-2000-ema/checkpoint-25000-ema`.
+seeds, and checkpoint `/workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-blue-cube-max2-robust-2000-ema/checkpoint-25000-ema`. The published validation used eight
+NVIDIA RTX PRO 6000 Blackwell Server Edition GPUs with approximately 96 GiB
+VRAM each.
 
 | Task | Successes | Episodes | Success rate |
 |---|---:|---:|---:|
@@ -17,32 +19,71 @@ seeds, and checkpoint `/workspace/Isaac-GR00T/outputs/franka-groot-sft/franka-bl
 
 Machine-readable results: [assets/arena/summary.json](assets/arena/summary.json).
 
-## Install
+## Container and install
 
-Use the NVIDIA Isaac Lab container with eight CUDA GPUs:
+Run the workflow inside the pinned NVIDIA NGC base image:
+
+```text
+nvcr.io/nvidia/isaac-lab:3.0.0-beta2-post1
+```
+
+This is a standard Docker deployment; Brev is not required. On a compatible
+Linux Docker host with NVIDIA Container Toolkit installed:
 
 ```bash
+export HOST_WORKSPACE="$PWD/franka-workspace"
+mkdir -p "${HOST_WORKSPACE}"
+docker pull nvcr.io/nvidia/isaac-lab:3.0.0-beta2-post1
+docker run -d --name franka-groot-e2e --restart unless-stopped \
+  --gpus all \
+  --network host \
+  --ipc host \
+  --shm-size 32g \
+  -e OMNI_KIT_ACCEPT_EULA=YES \
+  -e ACCEPT_EULA=Y \
+  -e PRIVACY_CONSENT=Y \
+  -v "${HOST_WORKSPACE}:/workspace" \
+  nvcr.io/nvidia/isaac-lab:3.0.0-beta2-post1 bash -lc "sleep infinity"
+docker exec -it franka-groot-e2e bash
+```
+
+Then, inside the container:
+
+```bash
+git clone https://github.com/jihyeonRyu/IsaacLab-Scripts.git \
+  /workspace/IsaacLab-Scripts
 bash /workspace/IsaacLab-Scripts/franka_groot_e2e/install_franka_groot_e2e.sh \
   --workspace-root /workspace \
+  --num-gpus auto \
   --accept-eula
-```
-
-The installer accepts custom `--scripts-repo`, `--groot-repo`, `--arena-repo`,
-and `--models-root` paths. It creates isolated Isaac Lab, GR00T, and Arena
-environments and downloads public GR00T N1.7 3B and Cosmos Reason2 2B weights.
-W&B authentication remains explicit:
-
-```bash
+source /workspace/franka_groot_env.sh
 /workspace/Isaac-GR00T/.venv/bin/wandb login
 ```
+
+The installer verifies Isaac Sim 6.0.1 and Isaac Lab 3.0.0 from the image and
+does not reinstall them. Isaac and Arena use the bundled `/isaac-sim/python.sh`
+runtime; Arena-only dependencies live in a workspace-local user site, while
+GR00T uses its own workspace venv. It auto-detects visible GPUs, accepts
+`--num-gpus` and `--gpu-ids`, and downloads the public GR00T N1.7 3B and Cosmos
+Reason2 2B weights. A non-container pip fallback requires the explicit
+`--isaac-mode pip` option and is not the customer reference environment.
 
 ## Run end to end
 
 ```bash
+source /workspace/franka_groot_env.sh
 nohup bash /workspace/IsaacLab-Scripts/franka_groot_e2e/run_pipeline.sh \
   --workspace-root /workspace \
+  --num-gpus "${NUM_GPUS}" \
+  --gpu-ids "${GPU_IDS}" \
   > /workspace/output/franka_final_pipeline.log 2>&1 &
 ```
+
+Generation, SFT, and Arena parallelism all follow `--num-gpus` and
+`--gpu-ids`. Generation also accepts `--num-envs-per-gpu`; SFT accepts
+`--per-gpu-batch-size` or an explicit divisible `--global-batch-size`. The
+default 16 samples/GPU is the published 96 GiB setting; use 2–4 as the initial
+value on 44–48 GiB GPUs.
 
 The restart-safe stages are generation, analysis, LeRobot conversion, coverage
 planning, SFT, final EMA attention, maximum-two-cube Arena evaluation, final
