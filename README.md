@@ -14,3 +14,10 @@ It contains:
 - Arena result tables plus one successful and failed video for every task.
 
 Start with the [complete E2E guide](franka_groot_e2e/README.md).
+
+
+## Franka pull-lift-hang task
+
+The Newton MJWarp scaffold for two Franka arms pulling, lifting, and hanging a panel is under
+[`franka_pull_lift_hang/`](franka_pull_lift_hang/README.md). It includes
+a dedicated Isaac Lab 3.0 Docker launcher, web/native visualization and task data-collection scripts.
