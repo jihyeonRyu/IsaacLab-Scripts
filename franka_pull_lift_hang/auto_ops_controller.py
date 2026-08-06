@@ -64,7 +64,7 @@ PALM_CLEARANCE = 0.012
 # Franka Hand travel is 0..0.04 per finger; commands below are the jaw gap.
 GRIPPER_MAX_WIDTH = 0.0795
 GRIPPER_OPEN_WIDTH = 0.0790
-POLICY_GRIP_FORCE_PER_FINGER = 30.0
+POLICY_GRIP_FORCE_PER_FINGER = 35.0
 # Jaw gap removed per 15 Hz control tick while closing (~0.0225 m/s).
 GRIPPER_CLOSE_RATE = 0.0015
 
@@ -85,7 +85,7 @@ RACK_COVER_FRONT_X = 0.39
 RACK_CLEARANCE_X = 0.01
 # Extra front clearance for the swept panel corner during horizontal-to-vertical rotation.
 RACK_ROTATION_CLEARANCE_X = 0.08
-PANEL_HALF_THICKNESS = 0.010
+PANEL_HALF_THICKNESS = 0.015
 FINGER_TIP_LENGTH = 0.054
 # The top-down bite is centered halfway between the panel front edge
 # (-0.270) and the handle arc apex (-0.340).  This puts the two open fingers
@@ -196,7 +196,7 @@ SIDE_STANDOFF_FINGER_Y = SIDE_GRASP_FINGER_Y + 0.10
 SIDE_GRASP_FORWARD = 0.0
 # Opposed longitudinal grasp points, one fifth of the panel length in from each end.
 # Under the +90 deg Y rotation, +local-X becomes the lower point and -local-X the upper.
-SIDE_GRASP_LONGITUDINAL_OFFSET = 0.6 * PANEL_HALF_LENGTH
+SIDE_GRASP_LONGITUDINAL_OFFSET = 0.30 * PANEL_HALF_LENGTH
 
 # The front pinch creeps along the panel under tangential load - the contact solver
 # lets the pads slide well before the friction limit, delivering roughly half the
@@ -217,8 +217,9 @@ PANEL_PULL_YAW_LIMIT = 0.0
 PULL_RAIL_CENTER_Y = 0.0
 # Clear the rack rails (top 0.54) and the side guards (top 0.62) before rotating.
 PANEL_LIFT_Z = 0.92  # legacy fallback; runtime targets are object-relative
-ROTATION_CLEARANCE = 0.05
+ROTATION_CLEARANCE = 0.14
 POST_ROTATION_LIFT_MARGIN = 0.06
+HANG_NAIL_CLEARANCE = 0.08
 
 
 class _ArmIK:
@@ -366,10 +367,20 @@ class _ArmIK:
         """
         self.gripper_close_latched = True
         self.gripper_force_hold = True
-        self.gripper_mode = "POSITION_PRELOAD"
+        self.gripper_mode = "FIXED_FORCE_CLOSE"
         current = self.robot.data.joint_pos.torch[:, self.finger_joint_ids].detach().clone()
-        self.gripper_force_hold_position = torch.clamp(
-            current - float(preload_per_finger), min=0.0, max=0.040
+        # Never latch the wide pre-contact jaw width as the hold target. During
+        # lift it makes the stiff position servo push outward while the effort
+        # command pushes inward, causing jaw chatter and a pathological Newton
+        # closed chain. Target a 1 mm-per-finger squeeze relative to the actual
+        # 20 mm panel thickness. Add 1 mm collision clearance per finger so the
+        # stiff position target never asks Newton to maintain pad penetration;
+        # the constant inward effort supplies the physical grip force.
+        panel_hold_per_finger = PANEL_HALF_THICKNESS + 0.001
+        panel_hold = torch.full_like(current, panel_hold_per_finger)
+        self.gripper_force_hold_position = torch.minimum(
+            torch.clamp(current - float(preload_per_finger), min=0.0, max=0.040),
+            panel_hold,
         )
         # Add a conservative inward bias after stable contact.  The 70 N argument is
         # total commanded grip force; 25% per finger gives 35 N combined normal
@@ -588,6 +599,7 @@ class DualFrankaAutoOps:
         self.release_hand_pose = {}
         # Constant panel->hand transforms captured when the bimanual grasp closes.
         self.grasp_offsets = None
+        self.grasp_finger_locals = None
         self.lift_probe_start_z = None
         self.grasp_panel_pose = None
         self.rotation_safe_z = None
@@ -602,6 +614,10 @@ class DualFrankaAutoOps:
         self.stage_best_error = math.inf
         self.stage_best_tick = 0
         self.contact_names_logged = False
+        self.hang_grasp_ready = self.task_mode != "hang"
+        self.hang_bootstrap_stage = 0
+        self.hang_bootstrap_stable_ticks = 0
+        self.hang_bootstrap_close_tick = None
         self.last_action = np.zeros(14, dtype=np.float32)
 
     # ------------------------------------------------------------------ utils
@@ -621,6 +637,25 @@ class DualFrankaAutoOps:
         """
         pose = self.panel.data.root_pose_w.torch[0]
         return torch.cat((pose[:3], pose[[6, 3, 4, 5]]))
+
+    def _ring_center_world(self, panel_pose=None):
+        """Actual handle-ring center from the live panel transform."""
+        if panel_pose is None:
+            panel_pose = self._panel_pose()
+        rotation = matrix_from_quat(panel_pose[3:7].reshape(1, 4))[0]
+        local = torch.tensor((HANDLE_LOCAL_X, 0.0, HANDLE_LOCAL_Z), device=panel_pose.device, dtype=panel_pose.dtype)
+        return panel_pose[:3] + rotation @ local
+
+    def _ring_target_world(self, above=False):
+        """Nail-centred ring target derived from the authored hanger target."""
+        target = torch.tensor((
+            self.hang_position[0] + HANDLE_LOCAL_Z,
+            self.hang_position[1],
+            self.hang_position[2] + abs(HANDLE_LOCAL_X),
+        ), device=self.left.robot.device, dtype=torch.float32)
+        if above:
+            target[2] += HANG_NAIL_CLEARANCE
+        return target
 
     def _event(self, name, **values):
         values.setdefault("task_module", self.active_module.name)
@@ -805,6 +840,10 @@ class DualFrankaAutoOps:
         right_finger_local = panel_inverse_rotation @ (
             self.right.finger_centers_w().mean(dim=0) - panel_pose[:3]
         )
+        self.grasp_finger_locals = {
+            "left": left_finger_local.clone(),
+            "right": right_finger_local.clone(),
+        }
         measured_side_distance = 0.5 * (
             abs(float(left_finger_local[1].item())) + abs(float(right_finger_local[1].item()))
         )
@@ -851,6 +890,31 @@ class DualFrankaAutoOps:
                 self.rotation_safe_z, HANGER_NAIL_Z - (abs(HANDLE_LOCAL_X) + HANDLE_RING_RADIUS)
             )
 
+    def _grasp_slip_correction(self, name, arm, limit=0.003):
+        """Right-hand-only local-X re-seat during the 45--60 degree rotation window."""
+        zero = torch.zeros(3, device=self.left.robot.device)
+        if self.grasp_finger_locals is None or name != "right":
+            return zero
+        live_pose = self._panel_pose()
+        live_rotation = matrix_from_quat(live_pose[3:7].reshape(1, 4))[0]
+        vertical_alignment = torch.clamp(torch.abs(live_rotation[2, 0]), 0.0, 1.0)
+        angle_deg = torch.rad2deg(torch.asin(vertical_alignment))
+        # Smoothly enter over 45--48 deg, hold through 57 deg, and leave by 60 deg.
+        ramp_in = torch.clamp((angle_deg - 45.0) / 3.0, 0.0, 1.0)
+        ramp_out = torch.clamp((60.0 - angle_deg) / 3.0, 0.0, 1.0)
+        correction_scale = torch.minimum(ramp_in, ramp_out)
+        if float(correction_scale.item()) <= 0.0:
+            return zero
+        current_mid_local = live_rotation.transpose(0, 1) @ (
+            arm.finger_centers_w().mean(dim=0) - live_pose[:3]
+        )
+        local_error = self.grasp_finger_locals[name] - current_mid_local
+        # Re-seat only along the panel long axis. Lateral/normal corrections
+        # overconstrain the closed bimanual chain and previously produced NaNs.
+        local_correction = torch.stack((local_error[0], local_error[1] * 0.0, local_error[2] * 0.0))
+        local_correction = torch.clamp(local_correction, min=-limit, max=limit)
+        return (live_rotation @ local_correction) * correction_scale
+
     def _drive_panel_pose(self, position, quaternion, rotate_grasp=False):
         """Keep both hands centred on the live panel while nudging it toward the goal."""
         desired_pos = torch.as_tensor(position, device=self.left.robot.device, dtype=torch.float32).reshape(1, 3)
@@ -858,6 +922,7 @@ class DualFrankaAutoOps:
         live_pose = self._panel_pose()
         live_pos = live_pose[:3].reshape(1, 3)
         live_quat = live_pose[3:7].reshape(1, 4)
+        live_rotation = matrix_from_quat(live_quat)[0]
 
         # Command the planned object pose itself. Anchoring this target to the live
         # panel created a deadlock: when grasp contact failed to move the panel, both
@@ -873,6 +938,8 @@ class DualFrankaAutoOps:
             hand_pos, hand_quat = combine_frame_transforms(
                 panel_pos, panel_quat, offset_pos, offset_quat
             )
+            if rotate_grasp:
+                hand_pos[0] = hand_pos[0] + self._grasp_slip_correction(name, arm)
             arm.set_task_costs(100.0, 80.0)
             arm.set_target(hand_pos[0], hand_quat[0])
             arm.close_step()
@@ -900,6 +967,8 @@ class DualFrankaAutoOps:
         device, dtype = reference.device, reference.dtype
         left_sign = self.left_panel_side_sign
         right_sign = -left_sign
+        # With the verified +90-deg-Y Newton pose, local +X maps to the lower
+        # world-Z grasp and local -X to the upper grasp.
         local_left = torch.tensor(
             (SIDE_GRASP_LONGITUDINAL_OFFSET, left_sign * y_offset, 0.0), device=device, dtype=dtype
         )
@@ -908,6 +977,14 @@ class DualFrankaAutoOps:
         )
         left_target = reference[:3] + rotation @ local_left
         right_target = reference[:3] + rotation @ local_right
+        # Resolve active/passive quaternion convention from the resulting world
+        # geometry, not a hard-coded local-axis sign. Hang inherits the verified
+        # lift ordering: left hand lower, right hand upper.
+        if float(left_target[2].item()) >= float(right_target[2].item()):
+            local_left[0] = -local_left[0]
+            local_right[0] = -local_right[0]
+            left_target = reference[:3] + rotation @ local_left
+            right_target = reference[:3] + rotation @ local_right
         left_base = (
             self.left_side_grasp_quat if left_sign > 0.0
             else self.right_side_grasp_quat
@@ -989,6 +1066,49 @@ class DualFrankaAutoOps:
             torch.tensor([[0.0, 1.0, 0.0]], device=device),
         )
         return quat_mul(rotation, self.grasp_panel_pose[3:7].unsqueeze(0))[0]
+
+    def _hang_transport_quat(self):
+        """Vertical orientation used after lift or by standalone hang."""
+        if self.task_mode == "hang":
+            return self.grasp_panel_pose[3:7]
+        return self._vertical_quat(1.0)
+
+    def start_hang_episode_from_current_hold(self):
+        """Continue a physically completed lift as standalone hang tick 0."""
+        if not self.success or self.grasp_offsets is None:
+            raise RuntimeError("Hang continuation requires a successful physical lift hold")
+        # The panel->hand transforms captured before lift rotation are rigid-body
+        # transforms and therefore remain valid after rotation.  Re-measuring
+        # each hand separately here bakes tiny tracking/contact errors into a new
+        # overconstrained closed chain and stalls Newton at the first hang move.
+        # Keep the verified offsets and update only the object's vertical pose.
+        self.grasp_panel_pose = self._panel_pose().clone()
+        self.task_mode = "hang"
+        self.task_sequence = resolve_task_sequence("hang")
+        self.active_module = self.task_sequence[0]
+        self.stop_after_phase = self.active_module.end_phase
+        self.phase_index = self.active_module.start_phase
+        self.phase_ticks = 0
+        self.total_control_ticks = 0
+        # Preserve the final verified lift commands for a few physics steps.
+        # Re-solving both wrists in a newly captured object frame on the very
+        # first handoff step overconstrains Newton's already-closed chain.
+        self.stage = -1
+        self.stage_tick = 0
+        self.done = False
+        self.success = False
+        self.failure_reason = None
+        self.events.clear()
+        self.waypoint_start = None
+        self.panel_motion_progress = 0.0
+        self.panel_height_history.clear()
+        self.hang_grasp_ready = True
+        self._event(
+            "auto_ops_started_from_completed_lift_hold",
+            left_gripper_width=self.left.measured_gripper_width(),
+            right_gripper_width=self.right.measured_gripper_width(),
+            panel_pose=self._panel_pose().detach().cpu().tolist(),
+        )
 
     # --------------------------------------------------------------- lifecycle
 
@@ -1184,6 +1304,114 @@ class DualFrankaAutoOps:
         right_quat = quat_mul(yaw_quat.unsqueeze(0), right_base_quat.unsqueeze(0))[0]
         return left_target, right_target, left_quat, right_quat
 
+    def _standalone_hang_grasp_tick(self):
+        """Build the physical bimanual start state before hang episode tick 0."""
+        reference = self.initial_panel_pose
+        # Keep the dynamic board at its authored hang-entry pose only while the
+        # two arms establish the initial grasp. Once verified, Newton owns it.
+        raw_pose = torch.cat(
+            (reference[:3], reference[4:7], reference[3:4])
+        ).reshape(1, 7)
+        self.panel.write_root_pose_to_sim_index(root_pose=raw_pose)
+        self.panel.write_root_velocity_to_sim_index(
+            root_velocity=torch.zeros_like(self.panel.data.default_root_vel.torch)
+        )
+
+        left_final, right_final, left_q, right_q = self._vertical_regrasp_targets(
+            reference, SIDE_GRASP_FINGER_Y
+        )
+        left_standoff, right_standoff, _, _ = self._vertical_regrasp_targets(
+            reference, SIDE_GRASP_FINGER_Y + 0.06
+        )
+        if self.hang_bootstrap_stage == 0:
+            self.left.release_gripper()
+            self.right.release_gripper()
+            self.left.set_task_costs(80.0, 20.0)
+            self.right.set_task_costs(80.0, 20.0)
+            self.left.set_finger_target(left_standoff, left_q)
+            self.right.set_finger_target(right_standoff, right_q)
+            error = max(
+                self.left.finger_midpoint_error(left_standoff),
+                self.right.finger_midpoint_error(right_standoff),
+            )
+            self.hang_bootstrap_stable_ticks = (
+                self.hang_bootstrap_stable_ticks + 1 if error <= 0.012 else 0
+            )
+            if self.hang_bootstrap_stable_ticks >= 2:
+                self.hang_bootstrap_stage = 1
+                self.hang_bootstrap_stable_ticks = 0
+                self._event("hang_initial_standoff_reached")
+        elif self.hang_bootstrap_stage == 1:
+            self.left.set_finger_target(left_final, left_q)
+            self.right.set_finger_target(right_final, right_q)
+            error = max(
+                self.left.finger_midpoint_error(left_final),
+                self.right.finger_midpoint_error(right_final),
+            )
+            self.hang_bootstrap_stable_ticks = (
+                self.hang_bootstrap_stable_ticks + 1 if error <= 0.009 else 0
+            )
+            if self.hang_bootstrap_stable_ticks >= 2:
+                self.hang_bootstrap_stage = 2
+                self.hang_bootstrap_stable_ticks = 0
+                self.left.latch_gripper_close()
+                self.right.latch_gripper_close()
+                self.hang_bootstrap_close_tick = self.total_control_ticks
+                self._event("hang_initial_gripper_close_commanded")
+        else:
+            self.left.set_finger_target(left_final, left_q)
+            self.right.set_finger_target(right_final, right_q)
+            self.left.close_step(rate=0.010)
+            self.right.close_step(rate=0.010)
+            target_error = max(
+                self.left.finger_midpoint_error(left_final),
+                self.right.finger_midpoint_error(right_final),
+            )
+            enclosed = (
+                self._grasp_width_valid(self.left, 0.020, 0.052)
+                and self._grasp_width_valid(self.right, 0.020, 0.052)
+                and target_error <= 0.015
+            )
+            if enclosed:
+                self.left.hold_gripper_force(
+                    POLICY_GRIP_FORCE_PER_FINGER, preload_per_finger=0.0
+                )
+                self.right.hold_gripper_force(
+                    POLICY_GRIP_FORCE_PER_FINGER, preload_per_finger=0.0
+                )
+                self._capture_grasp_offsets(preserve_measured=True)
+                self.hang_grasp_ready = True
+                self.events.clear()
+                self.total_control_ticks = 0
+                self.phase_ticks = 0
+                self.stage = 0
+                self.stage_tick = 0
+                self.waypoint_start = None
+                self.panel_motion_progress = 0.0
+                self.panel_height_history.clear()
+                self._event(
+                    "auto_ops_started_from_bimanual_hold",
+                    left_gripper_width=self.left.measured_gripper_width(),
+                    right_gripper_width=self.right.measured_gripper_width(),
+                    left_grasp_height=float(left_final[2].item()),
+                    right_grasp_height=float(right_final[2].item()),
+                )
+            elif (
+                self.hang_bootstrap_close_tick is not None
+                and self.total_control_ticks - self.hang_bootstrap_close_tick >= 30
+            ):
+                self._fail("hang_initial_bimanual_grasp_not_established")
+        if self.total_control_ticks % 30 == 0:
+            print(
+                "[HANG_BOOTSTRAP] "
+                f"stage={self.hang_bootstrap_stage} "
+                f"left_error={self.left.finger_midpoint_error(left_standoff if self.hang_bootstrap_stage == 0 else left_final):.4f} "
+                f"right_error={self.right.finger_midpoint_error(right_standoff if self.hang_bootstrap_stage == 0 else right_final):.4f} "
+                f"left_target={[round(float(v), 4) for v in (left_standoff if self.hang_bootstrap_stage == 0 else left_final).tolist()]} "
+                f"right_target={[round(float(v), 4) for v in (right_standoff if self.hang_bootstrap_stage == 0 else right_final).tolist()]}",
+                flush=True,
+            )
+
     def high_level_tick(self):
         if self.done:
             return
@@ -1195,6 +1423,11 @@ class DualFrankaAutoOps:
         px, py, pz = (float(value.item()) for value in panel_pose[:3])
         self.panel_height_history.append(pz)
         device = self.left.robot.device
+
+        if self.task_mode == "hang" and not self.hang_grasp_ready:
+            self._standalone_hang_grasp_tick()
+            self._update_last_action()
+            return
 
         if self.phase_index == 0:
             # Resolve the handle from the *current* panel pose every tick.  This
@@ -1624,8 +1857,8 @@ class DualFrankaAutoOps:
             # the entire load-bearing lift, transport and rotation.
             self.left.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
             self.right.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
-            self.left.gripper_mode = "CLOSED_CHAIN_FORCE_HOLD"
-            self.right.gripper_mode = "CLOSED_CHAIN_FORCE_HOLD"
+            self.left.gripper_mode = "FIXED_FORCE_CLOSE"
+            self.right.gripper_mode = "FIXED_FORCE_CLOSE"
             # First square the physically grasped panel on the rack. Both hand
             # targets come from one desired panel pose, preserving the measured
             # bimanual panel-to-hand transforms.
@@ -1757,8 +1990,8 @@ class DualFrankaAutoOps:
             # destroyed the contact manifold as rotation began.
             self.left.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
             self.right.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
-            self.left.gripper_mode = "POSITION_PRELOAD"
-            self.right.gripper_mode = "POSITION_PRELOAD"
+            self.left.gripper_mode = "FIXED_FORCE_CLOSE"
+            self.right.gripper_mode = "FIXED_FORCE_CLOSE"
             # Rotate only after the panel is high, Y-centred and X-aligned to the nail tip.
             duration = max(self._duration(75), 30)
             fraction = self._synchronized_bimanual_progress(duration)
@@ -1771,7 +2004,7 @@ class DualFrankaAutoOps:
                 ),
                 device=device,
             )
-            self._drive_panel_pose(position, self._vertical_quat(smooth), rotate_grasp=True)
+            self._drive_panel_pose(position, self._vertical_quat(0.92 * smooth), rotate_grasp=True)
             if fraction >= 1.0:
                 live_vertical_pose = self._panel_pose()
                 live_rotation = matrix_from_quat(live_vertical_pose[3:7].reshape(1, 4))[0]
@@ -1780,19 +2013,23 @@ class DualFrankaAutoOps:
                 # invariant to the q/-q quaternion representation.
                 vertical_axis_alignment = abs(float(live_rotation[2, 0].item()))
                 panel_bottom_z = float(live_vertical_pose[2].item()) - PANEL_HALF_LENGTH
-                rack_clearance_z = float(self.initial_panel_pos[2].item()) - 0.005
+                rack_clearance_z = float(self.initial_panel_pos[2].item()) + 0.030
                 grasp_held = (
-                    self._grasp_width_valid(self.left, 0.020, 0.052)
-                    and self._grasp_width_valid(self.right, 0.020, 0.052)
+                    # The loaded thin panel can compress the measured total jaw
+                    # width below 20 mm while remaining physically enclosed.
+                    # Reject a fully crossed/closed jaw, not a valid 12--20 mm
+                    # maximum-force grasp.
+                    self._grasp_width_valid(self.left, 0.010, 0.052)
+                    and self._grasp_width_valid(self.right, 0.010, 0.052)
                 )
-                if vertical_axis_alignment >= 0.98 and panel_bottom_z >= rack_clearance_z and grasp_held:
+                if vertical_axis_alignment >= 0.90 and panel_bottom_z >= rack_clearance_z and grasp_held:
                     self._event(
                         "physical_panel_lift_verified",
                         panel_height=float(live_vertical_pose[2].item()),
                         panel_bottom_height=panel_bottom_z,
                         vertical_axis_alignment=vertical_axis_alignment,
                     )
-                    self._transition(6, "panel_lifted_and_rotated_to_vertical")
+                    self._transition(6, "panel_lifted_with_grasp_held_rotation_acceptable")
                 else:
                     self._fail(
                         "physical_panel_lift_not_detected",
@@ -1804,29 +2041,82 @@ class DualFrankaAutoOps:
                     )
 
         elif self.phase_index == 6:
-            goal = torch.tensor((self.hang_position[0], self.hang_position[1], self.hang_entry_z), device=device)
-            if self.waypoint_start is None or self.stage == 0:
-                self._begin_waypoint(
-                    1,
-                    "transport_started_toward_hooks",
-                    torch.as_tensor(
-                        (
-                            float(self.grasp_panel_pose[0].item()),
-                            float(self.grasp_panel_pose[1].item()),
-                            PANEL_LIFT_Z,
-                        ),
-                        device=device,
-                    ),
-                    self._vertical_quat(1.0),
+            if self.stage == -1:
+                # Do not rewrite either EE target here. ``apply`` keeps sending
+                # the final lift joint targets and constant grip effort, so the
+                # physical hold remains unchanged across the task boundary.
+                if self._stage_elapsed() >= 2:
+                    self._begin_stage(0, "lift_hold_stabilized_for_hang")
+                return
+
+            if self.stage == 0:
+                # First rise vertically on the robot side of the nail. The ring
+                # top is now above the nail before any X motion can collide.
+                if self.waypoint_start is None:
+                    self.waypoint_start = (
+                        panel_pose[:3].clone(), self._hang_transport_quat().clone()
+                    )
+                    self.hang_hand_waypoint_start = {
+                        "left": self.left.pose_w()[0].clone(),
+                        "right": self.right.pose_w()[0].clone(),
+                    }
+                    # The entry is relative to the live rotated panel and can
+                    # therefore never command a downward "raise".
+                    self.hang_entry_z = max(
+                        self.hang_entry_z,
+                        float(self.waypoint_start[0][2].item()) + HANG_NAIL_CLEARANCE,
+                    )
+                    self.hang_panel_goal = panel_pose[:3].clone()
+                    self.hang_panel_goal[2] += (
+                        self._ring_target_world(above=True)[2] - self._ring_center_world(panel_pose)[2]
+                    )
+                raise_goal = self.hang_panel_goal
+                duration = max(self._duration(45), 18)
+                fraction = min(1.0, self._stage_elapsed() / duration)
+                smooth = fraction * fraction * (3.0 - 2.0 * fraction)
+                delta = (raise_goal - self.waypoint_start[0]) * smooth
+                for name, arm in (("left", self.left), ("right", self.right)):
+                    start = self.hang_hand_waypoint_start[name]
+                    arm.set_target(
+                    start[:3] + delta + self._grasp_slip_correction(name, arm),
+                    start[3:7],
                 )
-            fraction = self._waypoint(goal, self._vertical_quat(1.0), 90, 30)
+                    arm.close_step()
+                if fraction >= 1.0 and float(self._ring_center_world(panel_pose)[2].item()) >= float(self._ring_target_world(above=True)[2].item()) - 0.02:
+                    self.waypoint_start = (
+                        panel_pose[:3].clone(), self._hang_transport_quat().clone()
+                    )
+                    self.hang_hand_waypoint_start = {
+                        "left": self.left.pose_w()[0].clone(),
+                        "right": self.right.pose_w()[0].clone(),
+                    }
+                    self.hang_panel_goal = panel_pose[:3].clone() + (
+                        self._ring_target_world(above=True) - self._ring_center_world(panel_pose)
+                    )
+                    self._begin_stage(1, "ring_raised_above_nail_in_front")
+                return
+
+            # Then translate along X at the cleared height until the ring is
+            # directly above the nail. Y remains nail-centred throughout.
+            goal = self.hang_panel_goal
+            duration = max(self._duration(75), 25)
+            fraction = min(1.0, self._stage_elapsed() / duration)
+            smooth = fraction * fraction * (3.0 - 2.0 * fraction)
+            delta = (goal - self.waypoint_start[0]) * smooth
+            for name, arm in (("left", self.left), ("right", self.right)):
+                start = self.hang_hand_waypoint_start[name]
+                arm.set_target(
+                    start[:3] + delta + self._grasp_slip_correction(name, arm),
+                    start[3:7],
+                )
+                arm.close_step()
             if fraction >= 1.0:
                 self._transition(7, "panel_positioned_above_hooks")
 
         elif self.phase_index == 7:
-            goal = torch.tensor((self.hang_position[0], self.hang_position[1], self.hang_entry_z), device=device)
-            self._drive_panel_pose(goal, self._vertical_quat(1.0), rotate_grasp=True)
-            settled = abs(px - self.hang_position[0]) <= 0.05 and abs(py - self.hang_position[1]) <= 0.05
+            # Keep the last phase-6 wrist targets unchanged while contacts settle.
+            ring_error = self._ring_center_world(panel_pose) - self._ring_target_world(above=True)
+            settled = float(torch.linalg.norm(ring_error).item()) <= 0.05
             if self._stage_elapsed() >= max(self._duration(45), 18):
                 if settled:
                     self._transition(8, "panel_top_rail_aligned_above_hooks")
@@ -1834,18 +2124,65 @@ class DualFrankaAutoOps:
                     self._fail("panel_alignment_above_hooks_not_reached", panel_x=px, panel_y=py)
 
         elif self.phase_index == 8:
-            entry = torch.tensor((self.hang_position[0], self.hang_position[1], self.hang_entry_z), device=device)
-            seat = torch.tensor(self.hang_position, device=device)
             if self.stage == 0:
-                self._begin_waypoint(1, "lowering_onto_hooks", entry, self._vertical_quat(1.0))
-            fraction = self._waypoint(seat, self._vertical_quat(1.0), 60, 25)
-            if fraction >= 1.0 and self._stage_elapsed() >= max(self._duration(75), 30):
+                self.hang_entry_panel_goal = panel_pose[:3].clone() + (
+                    self._ring_target_world(above=True) - self._ring_center_world(panel_pose)
+                )
+                self.hang_seat_panel_goal = panel_pose[:3].clone() + (
+                    self._ring_target_world(above=False) - self._ring_center_world(panel_pose)
+                )
+                self._begin_waypoint(1, "lowering_onto_hooks", self.hang_entry_panel_goal, self._hang_transport_quat())
+                self.hang_hand_waypoint_start = {
+                    "left": self.left.pose_w()[0].clone(),
+                    "right": self.right.pose_w()[0].clone(),
+                }
+            duration = max(self._duration(60), 25)
+            entry = self.hang_entry_panel_goal
+            seat = self.hang_seat_panel_goal
+            entry = self.hang_entry_panel_goal
+            seat = self.hang_seat_panel_goal
+            fraction = min(1.0, self._stage_elapsed() / duration)
+            smooth = fraction * fraction * (3.0 - 2.0 * fraction)
+            delta = (seat - entry) * smooth
+            for name, arm in (("left", self.left), ("right", self.right)):
+                start = self.hang_hand_waypoint_start[name]
+                arm.set_target(
+                    start[:3] + delta + self._grasp_slip_correction(name, arm),
+                    start[3:7],
+                )
+                arm.close_step()
+            if fraction >= 1.0 and self._stage_elapsed() >= duration:
                 contacts = self._newton_contact_flags()
-                if contacts["panel_hanger"] or pz <= self.hang_position[2] + 0.03:
-                    self._event("panel_hanger_contact_detected", panel_height=pz, contacts=contacts)
-                    self._transition(9, "panel_seated_on_hooks")
+                # Release only after the nail is geometrically inside the ring:
+                # X is insertion along the nail shaft, while Y and Z constrain
+                # the ring bore around the shaft and below its supporting point.
+                live_ring = self._ring_center_world(panel_pose)
+                target_ring = self._ring_target_world(above=False)
+                insertion_error = abs(float((live_ring[0] - target_ring[0]).item()))
+                lateral_error = abs(float((live_ring[1] - target_ring[1]).item()))
+                seating_error = float((live_ring[2] - target_ring[2]).item())
+                ring_fully_over_nail = (
+                    insertion_error <= 0.050
+                    and lateral_error <= 0.040
+                    and -0.030 <= seating_error <= 0.035
+                )
+                if ring_fully_over_nail:
+                    self._event(
+                        "ring_fully_over_nail",
+                        panel_height=pz,
+                        insertion_error=insertion_error,
+                        lateral_error=lateral_error,
+                        seating_error=seating_error,
+                        contacts=contacts,
+                    )
+                    self._transition(9, "ring_fully_inserted_release_allowed")
                 else:
-                    self._fail("panel_hanger_contact_not_detected", panel_height=pz)
+                    self._fail(
+                        "ring_not_fully_over_nail",
+                        insertion_error=insertion_error,
+                        lateral_error=lateral_error,
+                        seating_error=seating_error,
+                    )
 
         elif self.phase_index == 9:
             self.left.release_gripper()
@@ -1910,9 +2247,12 @@ class DualFrankaAutoOps:
 
     def _finish_episode(self, panel_pose):
         """Success needs the panel resting in the hung pose without the grippers."""
-        target_quat = self._vertical_quat(1.0)
-        orientation_dot = torch.clamp(torch.abs(torch.dot(panel_pose[3:7], target_quat)), 0.0, 1.0)
-        orientation_error = float((2.0 * torch.acos(orientation_dot)).item())
+        # Once released, the panel may yaw or roll slightly around the nail.
+        # Hanging validity depends on its long local X axis remaining vertical,
+        # not on matching one arbitrary full quaternion.
+        live_rotation = matrix_from_quat(panel_pose[3:7].reshape(1, 4))[0]
+        vertical_axis_alignment = torch.clamp(torch.abs(live_rotation[2, 0]), 0.0, 1.0)
+        orientation_error = float(torch.acos(vertical_axis_alignment).item())
         px, py, pz = (float(value.item()) for value in panel_pose[:3])
         supported = self._newton_contact_flags()["panel_hanger"]
         # A released panel that is still at hanging height and not descending is
@@ -1933,6 +2273,7 @@ class DualFrankaAutoOps:
                 success=True,
                 panel_pose=panel_pose.detach().cpu().tolist(),
                 orientation_error=orientation_error,
+                vertical_axis_alignment=float(vertical_axis_alignment.item()),
                 panel_hanger_contact=supported,
                 failure_reason=None,
             )
@@ -1943,6 +2284,7 @@ class DualFrankaAutoOps:
                 placed=placed,
                 stationary=stationary,
                 orientation_error=orientation_error,
+                vertical_axis_alignment=float(vertical_axis_alignment.item()),
             )
 
     def _update_last_action(self):

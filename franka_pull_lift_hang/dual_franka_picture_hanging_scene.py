@@ -93,7 +93,7 @@ from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg  # noqa: E402
 from isaaclab_newton.sim.schemas import NewtonMaterialPropertiesCfg  # noqa: E402
 from auto_ops_controller import (
     GRIPPER_MAX_WIDTH, PANEL_HALF_LENGTH, PANEL_PULL_DISTANCE,
-    RACK_COVER_FRONT_X, RACK_ROTATION_CLEARANCE_X, DualFrankaAutoOps,
+    RACK_COVER_FRONT_X, RACK_ROTATION_CLEARANCE_X, TASK_MODULES, DualFrankaAutoOps,
 )  # noqa: E402
 from async_sensor_writer import AsyncSensorWriter  # noqa: E402
 from camera_preview_server import CameraPreviewServer  # noqa: E402
@@ -136,7 +136,7 @@ S_HOOK_BAR_RADIUS = 0.012
 S_HOOK_SHELF_LOCAL_Z = -0.205
 S_HOOK_SHELF_LOCAL_X = (-0.030, -0.088)
 
-PANEL_BOARD_THICKNESS = 0.020
+PANEL_BOARD_THICKNESS = 0.030
 # Panel rear hanging rail, panel-local, measured in the hung (vertical) pose.  All
 # four frame members share a depth so the panel sits flat on the rails now that the
 # frame is underneath, and the hanging rail keeps full seating area on the hook.
@@ -1284,14 +1284,16 @@ def set_standalone_panel_start(panel, task_mode):
         pose[0, 2] = PANEL_STAGING_POSITION[2]
         pose[0, 3:7] = panel.data.default_root_pose.torch[0, 3:7]
     elif task_mode == "hang":
-        # Hang starts with the panel vertical at the hanger-entry height.  The
-        # controller's bimanual hold phase then owns the transport/release.
-        pose[0, :3] = torch.tensor(
-            (PANEL_HUNG_POSITION[0], PANEL_HUNG_POSITION[1], PANEL_HANG_ENTRY_Z),
+        # Match the verified lift endpoint: vertical with the negative-local-X
+        # handle edge uppermost. Root pose quaternions are scalar-first here.
+        pose[0, 0] = RACK_COVER_FRONT_X - PANEL_HALF_LENGTH - RACK_ROTATION_CLEARANCE_X
+        pose[0, 1] = PANEL_STAGING_POSITION[1]
+        pose[0, 2] = PANEL_STAGING_POSITION[2] + PANEL_HALF_LENGTH + 0.015
+        pose[0, 3:7] = torch.tensor(
+            (0.7071068, 0.0, 0.7071068, 0.0),
             device=pose.device,
             dtype=pose.dtype,
         )
-        pose[0, 3:7] = torch.tensor((0.7071068, 0.0, 0.7071068, 0.0), device=pose.device, dtype=pose.dtype)
     panel.write_root_pose_to_sim_index(root_pose=pose)
     panel.write_root_velocity_to_sim_index(root_velocity=torch.zeros_like(panel.data.default_root_vel.torch))
     panel.reset()
@@ -1323,11 +1325,11 @@ def main():
             # Frictional-to-normal constraint impedance.  Grasping wants the tangential
             # constraint stiffer than the normal one, but 50 was chasing a slip that
             # came from too little grip force, not from the solver.
-            impratio=10.0,
-            iterations=80,
-            ls_iterations=30,
-            ccd_iterations=32,
-            tolerance=1.0e-8,
+            impratio=5.0,
+            iterations=40,
+            ls_iterations=12,
+            ccd_iterations=16,
+            tolerance=1.0e-5,
             update_data_interval=1,
             use_mujoco_contacts=True,
             save_to_mjcf=str(args_cli.save_newton_mjcf) if args_cli.save_newton_mjcf else None,
@@ -1347,7 +1349,12 @@ def main():
     left_robot, right_robot, panel, cameras, appearance = design_scene(args_cli.panel_state)
     sim.reset()
     harden_contacts()
-    set_standalone_panel_start(panel, args_cli.auto_ops_task if args_cli.auto_ops else "long")
+    start_task_mode = (
+        "lift" if args_cli.auto_ops and args_cli.auto_ops_task == "hang"
+        else args_cli.auto_ops_task if args_cli.auto_ops
+        else "long"
+    )
+    set_standalone_panel_start(panel, start_task_mode)
     report_room_camera_poses(cameras)
     if args_cli.newton_debug:
         from isaaclab_newton.physics.newton_manager import NewtonManager
@@ -1425,7 +1432,10 @@ def main():
         validate_panel_rest_pose(panel)
         # Restore standalone lift/hang starts after the common settle pass;
         # otherwise the settle reset would silently put the panel back at staging.
-        set_standalone_panel_start(panel, args_cli.auto_ops_task)
+        restored_task_mode = (
+            "lift" if args_cli.auto_ops_task == "hang" else args_cli.auto_ops_task
+        )
+        set_standalone_panel_start(panel, restored_task_mode)
     auto_ops = None
     preview = None
     writer = None
@@ -1435,6 +1445,9 @@ def main():
     if args_cli.auto_ops:
         try:
             resolved_hang_position = resolve_hanger_target_from_stage()
+            controller_task_mode = (
+                "lift" if args_cli.auto_ops_task == "hang" else args_cli.auto_ops_task
+            )
             auto_ops = DualFrankaAutoOps(
                 left_robot,
                 right_robot,
@@ -1444,13 +1457,59 @@ def main():
                 motion_speed_scale=args_cli.motion_speed_scale,
                 hang_position=resolved_hang_position,
                 hang_entry_z=resolved_hang_position[2] + 0.050,
-                task_mode=args_cli.auto_ops_task,
+                task_mode=controller_task_mode,
             )
         except BaseException as exc:
             print(f"[AUTO_OPS_ERROR] controller_init={exc!r}", flush=True)
             traceback.print_exc()
             raise
         print(f"[INFO] auto_ops=enabled action_hz={1.0 / (sim_dt * args_cli.capture_every):g}")
+        if args_cli.auto_ops_task == "hang":
+            # Keep the setup pre-roll hidden. The first Viser frame is emitted
+            # only after the physically held horizontal lift state is ready.
+            # Continue phase 5 directly into phase 6 without ending/restarting
+            # the controller.  Rebuilding the bimanual object reference at this
+            # boundary overconstrains Newton; the verified lift closed chain is
+            # already exactly the state hang needs.
+            auto_ops.stop_after_phase = 10
+            preroll_step = 0
+            max_preroll_steps = 3600
+            while not (auto_ops.phase_index == 5 and auto_ops.stage >= 3) and not auto_ops.done:
+                auto_ops.apply(preroll_step)
+                panel.write_data_to_sim()
+                # Keep the remote Viser client alive during the hidden lift
+                # pre-roll. Without periodic renders the HTTP server is up but
+                # the browser receives no scene frame and stays entirely white.
+                sim.step(render=False)
+                left_robot.update(sim_dt)
+                right_robot.update(sim_dt)
+                panel.update(sim_dt)
+                preroll_step += 1
+                if preroll_step >= max_preroll_steps:
+                    raise RuntimeError("Hang initial bimanual grasp pre-roll timed out")
+            if auto_ops.done:
+                raise RuntimeError(
+                    f"Hang horizontal-lift pre-roll failed: {auto_ops.failure_reason}"
+                )
+            # Hang begins here: the panel is horizontally lifted and physically
+            # held. The first visible action is the closed-chain rotation.
+            auto_ops.active_module = TASK_MODULES["hang"]
+            if args_cli.visualizer:
+                sim.render()
+            # Reset annotation time only; preserve phase, stage, waypoint,
+            # gripper force and both Pink targets without a discontinuity.
+            auto_ops.total_control_ticks = 0
+            auto_ops.events.clear()
+            # Preserve the controller decimation phase. Restarting the main-loop
+            # counter at zero issues another Pink update only one physics step
+            # after the phase-5 update instead of after capture_every steps,
+            # which destabilizes/stalls Newton's vertical closed chain.
+            step = preroll_step
+            print(
+                f"[INFO] hang_preroll_complete steps={preroll_step} "
+                "initial_state=horizontal_panel_lifted_bimanual_hold_rotation_next",
+                flush=True,
+            )
     preview_stride = max(1, round(1.0 / (args_cli.camera_preview_fps * sim_dt)))
     if args_cli.camera_preview:
         preview = CameraPreviewServer(args_cli.camera_preview_port)
@@ -1465,7 +1524,20 @@ def main():
                 robot.set_joint_position_target_index(target=robot.data.default_joint_pos.torch)
                 robot.write_data_to_sim()
         panel.write_data_to_sim()
-        sim.step()
+        # A headless/no-camera verification must remain render-free after the
+        # long lift pre-roll.  Asking Kit for its first rendered frame only at
+        # the lift->hang handoff can spend minutes rebuilding the render graph
+        # and looks exactly like a physics/controller stall.  Viser and camera
+        # runs still render every requested simulation step.
+        visualizer_active = bool(args_cli.visualizer)
+        # Keep Newton stepping independently of the remote viewer. Rendering
+        # every physics step after a ~1000-step render-free pre-roll blocks the
+        # first hang step in Kit/Viser. Cameras still render whenever enabled;
+        # Viser alone updates at the configured simulation render interval.
+        render_main_step = bool(args_cli.enable_cameras) or (
+            visualizer_active and step % 16 == 0
+        )
+        sim.step(render=render_main_step)
         for camera in cameras.values():
             camera.update(sim_dt)
         if writer is not None and step % args_cli.capture_every == 0:
@@ -1492,8 +1564,10 @@ def main():
             )
         step += 1
 
-        if auto_ops is not None and auto_ops.done and not args_cli.hold_after_auto_ops:
-            break
+        if auto_ops is not None and auto_ops.done:
+            # Never keep ticking a failed or non-finite physics state.
+            if not args_cli.hold_after_auto_ops or not auto_ops.success:
+                break
     if preview is not None:
         preview.stop()
     if writer is not None:
