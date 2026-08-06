@@ -37,13 +37,13 @@ MuJoCo box sizes are half-extents, so this means a 20 mm board.
 
 ## Time discretization and CCD
 
-The task uses `--substeps 4` and 128 CCD iterations. CCD helps fast thin-body contact but cannot compensate for missing collision geometry.
+The task uses `--substeps 4` and 32 CCD iterations in the responsive viewer baseline. CCD helps fast thin-body contact but cannot compensate for missing collision geometry.
 
 ```text
 substep displacement = command displacement per control tick / substeps
 ```
 
-Keep this below the thinnest collider. The gripper ramps total jaw width at `GRIPPER_CLOSE_RATE=0.0015 m` per 15 Hz control tick instead of jumping from 79 mm to zero. If penetration remains after geometry validation, increase substeps, reduce command increments, and keep CCD enabled.
+Keep this below the thinnest collider. The gripper ramps total jaw width at `side close ramp up to 0.010 m` per 15 Hz control tick instead of jumping from 79 mm to zero. If penetration remains after geometry validation, increase substeps, reduce command increments, and keep CCD enabled.
 
 ## Contact constraint settings
 
@@ -51,13 +51,16 @@ Keep this below the thinnest collider. The gripper ramps total jaw width at `GRI
 
 ```text
 global solimp:               (0.95, 0.99, 0.002)
-panel/finger/PanelRack:      (0.995, 0.9999, 0.0005)
-contact margin:              0.002 m
+PanelRack solimp:           (0.995, 0.999, 0.0005)
+finger solimp:              (0.995, 0.999, 0.0005)
+panel solimp:               (0.98, 0.995, 0.002)
+PanelRack margin/solref:    0.012 m, (0.015, 2.0), priority 2
+finger margin/solref:       0.004 m, (0.008, 2.0), priority 3
+panel margin/solref:        0.002 m, (0.020, 1.5), priority 0
 contact gap:                 0.0 m
-solref:                      (0.012, 1.5)
-solver iterations:           250
-line-search iterations:      100
-CCD iterations:              128
+solver iterations:           80
+line-search iterations:      30
+CCD iterations:              32
 ```
 
 Include rails, side guards, rear stop, and top stop with the panel and fingers. Hardening only the grasped object still lets it sink through a soft support and tilt.
@@ -88,7 +91,7 @@ Apply maximum grip only after collision is stable. More force against penetrable
 
 ```text
 rails/guards: static 0.45, dynamic 0.30
-finger/panel/hanger: static 1.05, dynamic 0.85
+finger/panel/hanger: static 1.20, dynamic 1.00
 ```
 
 Friction matters only after contact exists. Near-zero rail friction lets incidental contact move the panel; extreme grasp friction can hide insufficient normal force.
@@ -105,6 +108,20 @@ Before lifting:
 - preserve both panel-to-hand transforms.
 
 Cover front is `x=0.39 m`, panel half-length is `0.27 m`, and clearance is `0.01 m`, so panel centre must be at or below `x=0.11 m`. If already farther out, never push it backward.
+
+## Rotation-time centering and slip recovery
+
+A frozen measured grasp transform is necessary, but it is not sufficient once a pad creeps. A stale world-frame trajectory keeps moving away from the slipped panel and turns a small error into a dropped object. During lift and rotation:
+
+- read the live panel pose every control tick;
+- mirror the two measured wrist offsets in panel-local coordinates so local X and Z match and local Y is equal and opposite;
+- reconstruct both wrist targets from one bounded corrected panel pose;
+- move the shared centre toward rack `y=0`, never correct each arm independently;
+- bound common translation correction to 12 mm per control tick;
+- bound angular correction to 0.045 rad per control tick;
+- advance shared trajectory progress only while both arms remain within 10 mm and 0.06 rad tracking error.
+
+This feedback is not a kinematic object shortcut: the panel remains fully dynamic. Only robot targets follow the measured object, and the grippers must carry the panel through physical contact. If the panel slips, both hands first follow its live centre and then apply the same limited recentering correction.
 
 ## Contact verification caveat
 
@@ -147,12 +164,12 @@ Damping dissipates velocity-dependent energy; it does not repair geometry or a d
 6. Slow angular motion if rotation error grows.
 
 ```text
-per-finger inward effort: 70 N (140 N total per gripper)
+per-finger inward effort: 17.5 N after verified contact (35 N total per gripper)
 hand stiffness:           3500 N/m
 hand damping:             650 N s/m
-targeted solref:          (0.012, 1.5)
-horizontal lift:          at least 35 control ticks
-panel rotation:           at least 40 control ticks
+targeted finger solref:   (0.008, 2.0)
+horizontal lift:          at least 25 control ticks
+panel rotation:           at least 30 control ticks
 ```
 
 For positive-format MuJoCo `solref=(timeconst, dampratio)`, decreasing time constant makes response faster/stiffer; increasing damping ratio dissipates more energy. Keep the time constant compatible with the substep. If chatter appears, undo the last stiffness change before adding more force.

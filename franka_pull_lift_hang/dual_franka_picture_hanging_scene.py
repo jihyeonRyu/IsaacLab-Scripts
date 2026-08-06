@@ -91,7 +91,10 @@ from isaaclab.sim.spawners.materials import RigidBodyMaterialBaseCfg  # noqa: E4
 from isaaclab_assets import FRANKA_PANDA_CFG  # noqa: E402
 from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg  # noqa: E402
 from isaaclab_newton.sim.schemas import NewtonMaterialPropertiesCfg  # noqa: E402
-from auto_ops_controller import GRIPPER_MAX_WIDTH, PANEL_PULL_DISTANCE, DualFrankaAutoOps  # noqa: E402
+from auto_ops_controller import (
+    GRIPPER_MAX_WIDTH, PANEL_HALF_LENGTH, PANEL_PULL_DISTANCE,
+    RACK_COVER_FRONT_X, RACK_ROTATION_CLEARANCE_X, DualFrankaAutoOps,
+)  # noqa: E402
 from async_sensor_writer import AsyncSensorWriter  # noqa: E402
 from camera_preview_server import CameraPreviewServer  # noqa: E402
 
@@ -99,8 +102,8 @@ PANEL_ROOT = "/World/Panel"
 TASK_CAMERA_EYE = (-2.2, 2.4, 1.8)
 TASK_CAMERA_TARGET = (0.55, 0.0, 0.85)
 
-ROBOT_BASE_X = -0.25
-ROBOT_BASE_Y = 0.64
+ROBOT_BASE_X = -0.40
+ROBOT_BASE_Y = 0.60
 TABLE_SIZE = (1.55, 1.36, 0.42)
 TABLE_POSITION = (0.10, 0.0, 0.21)
 # Staged at the back of the rack: the panel's rear edge is flush with the rail rear
@@ -118,7 +121,7 @@ PANEL_STAGING_POSITION = (0.42, 0.0, 0.550)
 # short of the rail front.
 RACK_RAIL_POSITION_X = 0.305
 RACK_RAIL_LENGTH = 1.15
-HANGER_ROD_X = 0.55
+HANGER_ROD_X = 0.28
 HANGER_ROD_Z = 1.25
 HANGER_ROD_LENGTH = 1.58
 HANGER_POST_Y = 0.76
@@ -229,7 +232,7 @@ LOW_SLIDE_MATERIAL_PATH = "/World/Materials/LowSlide"
 HIGH_HANG_MATERIAL_PATH = "/World/Materials/HighHangGrip"
 GRASP_PAD_NAME = "NewtonGraspPad"
 # Convex collision proxy matching the physical Panda fingertip body.
-GRASP_PAD_SIZE = (0.018, 0.012, 0.050)
+GRASP_PAD_SIZE = (0.030, 0.008, 0.050)
 GRASP_PAD_LOCAL_POSITION = (0.0, 0.0, 0.025)
 # The panel skid still slides under the pull (needs ~4.7 N against a ~24 N grip),
 # but no longer squirts across the rack from an incidental finger touch the way a
@@ -244,8 +247,8 @@ LOW_SLIDE_DYNAMIC_FRICTION = 0.30
 # Rubber-faced pads on a painted board.  This was briefly run at 2.5, which is not a
 # coefficient any real pair of surfaces has; it was compensating for a grip force
 # modelled ten times too weak.  Fix the grip instead.
-HIGH_HANG_STATIC_FRICTION = 1.05
-HIGH_HANG_DYNAMIC_FRICTION = 0.85
+HIGH_HANG_STATIC_FRICTION = 1.20
+HIGH_HANG_DYNAMIC_FRICTION = 1.00
 
 ROOM_X_MIN = -2.90
 ROOM_X_MAX = 1.90
@@ -355,15 +358,20 @@ def configure_newton_grasp_contacts():
     if missing:
         raise RuntimeError(f"Panda finger links missing at indices {missing}")
 
-    for finger_index, finger_link in enumerate(finger_links):
-        pad_path = f"{finger_link.GetPath()}/{GRASP_PAD_NAME}_{finger_index}"
-        add_compound_cube(
-            stage, pad_path, GRASP_PAD_SIZE, GRASP_PAD_LOCAL_POSITION,
-            (0.12, 0.12, 0.12), HIGH_HANG_MATERIAL_PATH, collision=True,
-        )
+    # Opposing fingers of one Panda must close through their own contact margins.
+    # Filter only same-hand links; finger-to-panel contacts remain enabled.
+    filtered_pairs = []
+    for side in ("Left", "Right"):
+        left_finger = stage.GetPrimAtPath(f"/World/Franka{side}/panda_leftfinger")
+        right_finger = stage.GetPrimAtPath(f"/World/Franka{side}/panda_rightfinger")
+        pair_api = UsdPhysics.FilteredPairsAPI.Apply(left_finger)
+        pair_api.CreateFilteredPairsRel().AddTarget(right_finger.GetPath())
+        filtered_pairs.append((str(left_finger.GetPath()), str(right_finger.GetPath())))
+
     print(
         f"[INFO] franka_fingers_verified count={len(finger_links)} "
-        f"pads={len(finger_links)} size={GRASP_PAD_SIZE}", flush=True,
+        f"stock_colliders=enabled "
+        f"self_collision_filtered={filtered_pairs} "
     )
     _report_hand_envelope(stage)
     _report_finger_colliders(stage)
@@ -692,8 +700,8 @@ def validate_layout():
 
     panel_near_edge_x = PANEL_STAGING_POSITION[0] - 0.27
     initial_reach = panel_near_edge_x - ROBOT_BASE_X
-    if not 0.20 <= initial_reach <= 0.60:
-        raise ValueError(f"Panel near-edge reach should be 0.30-0.60 m; got {initial_reach:.3f} m")
+    if not 0.20 <= initial_reach <= 0.75:
+        raise ValueError(f"Panel near-edge reach should be 0.20-0.75 m; got {initial_reach:.3f} m")
 
     # The rails must still carry the panel once the left arm has pulled it.
     rail_front_x = RACK_RAIL_POSITION_X - 0.5 * RACK_RAIL_LENGTH
@@ -756,32 +764,82 @@ def harden_contacts():
         import mujoco
         solver = NewtonManager._solver
         geom_solimp = solimp[0] if solimp.ndim == 3 else solimp
-        hardened_geom_ids = []
+        support_geom_ids = []
+        finger_geom_ids = []
+        panel_geom_ids = []
         for geom_index in range(int(solver.mj_model.ngeom)):
             geom_name = mujoco.mj_id2name(
                 solver.mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_index
             ) or ""
-            if "Panel" in geom_name or "PanelRack" in geom_name or "finger" in geom_name:
-                geom_solimp[geom_index, 0] = 0.995
-                geom_solimp[geom_index, 1] = 0.9999
-                geom_solimp[geom_index, 2] = 0.0005
-                hardened_geom_ids.append(geom_index)
+            if "PanelRack" in geom_name:
+                geom_solimp[geom_index, :3] = (0.995, 0.999, 0.0005)
+                support_geom_ids.append(geom_index)
+            elif "finger" in geom_name:
+                # Finger parameters win for finger-object pairs; rack-panel support stays softer.
+                geom_solimp[geom_index, :3] = (0.995, 0.999, 0.0005)
+                finger_geom_ids.append(geom_index)
+            elif "/World/Panel/" in geom_name:
+                geom_solimp[geom_index, :3] = (0.98, 0.995, 0.002)
+                panel_geom_ids.append(geom_index)
+        hardened_geom_ids = support_geom_ids + finger_geom_ids + panel_geom_ids
+
+        # MJWarp does not preserve USD FilteredPairsAPI for these instance-derived
+        # finger links. Use MuJoCo collision masks in the live Newton model:
+        # panel/scene=bit 1, left finger=bit 2, right finger=bit 4. Both fingers
+        # collide with bit-1 objects, while opposing fingers cannot collide.
+        collision_masks_applied = False
+        if all(hasattr(model, field) for field in ("geom_contype", "geom_conaffinity")):
+            geom_contype = model.geom_contype.numpy()
+            geom_conaffinity = model.geom_conaffinity.numpy()
+            contype_view = geom_contype[0] if geom_contype.ndim == 2 else geom_contype
+            conaffinity_view = geom_conaffinity[0] if geom_conaffinity.ndim == 2 else geom_conaffinity
+            for geom_index in finger_geom_ids:
+                geom_name = mujoco.mj_id2name(
+                    solver.mj_model, mujoco.mjtObj.mjOBJ_GEOM, geom_index
+                ) or ""
+                if "panda_leftfinger" in geom_name:
+                    contype_view[geom_index] = 2
+                    conaffinity_view[geom_index] = 1
+                elif "panda_rightfinger" in geom_name:
+                    contype_view[geom_index] = 4
+                    conaffinity_view[geom_index] = 1
+            model.geom_contype = wp.array(
+                geom_contype, dtype=model.geom_contype.dtype, device=model.geom_contype.device
+            )
+            model.geom_conaffinity = wp.array(
+                geom_conaffinity, dtype=model.geom_conaffinity.dtype, device=model.geom_conaffinity.device
+            )
+            collision_masks_applied = True
         model.geom_solimp = wp.array(solimp, dtype=model.geom_solimp.dtype, device=model.geom_solimp.device)
-        if all(hasattr(model, field) for field in ("geom_margin", "geom_gap", "geom_solref")):
+        if all(hasattr(model, field) for field in ("geom_margin", "geom_gap", "geom_solref", "geom_priority")):
             geom_margin = model.geom_margin.numpy()
             geom_gap = model.geom_gap.numpy()
             geom_solref = model.geom_solref.numpy()
+            geom_priority = model.geom_priority.numpy()
             margin_view = geom_margin[0] if geom_margin.ndim == 2 else geom_margin
             gap_view = geom_gap[0] if geom_gap.ndim == 2 else geom_gap
             solref_view = geom_solref[0] if geom_solref.ndim == 3 else geom_solref
-            for geom_index in hardened_geom_ids:
+            priority_view = geom_priority[0] if geom_priority.ndim == 2 else geom_priority
+            for geom_index in support_geom_ids:
+                margin_view[geom_index] = 0.012
+                gap_view[geom_index] = 0.0
+                solref_view[geom_index, :] = (0.010, 2.5)
+                priority_view[geom_index] = 2
+            for geom_index in finger_geom_ids:
+                margin_view[geom_index] = 0.004
+                gap_view[geom_index] = 0.0
+                # 8 ms is above 2x the 2.08 ms substep but materially firmer than 20 ms.
+                solref_view[geom_index, :] = (0.008, 2.0)
+                priority_view[geom_index] = 3
+            for geom_index in panel_geom_ids:
                 margin_view[geom_index] = 0.002
                 gap_view[geom_index] = 0.0
-                solref_view[geom_index, 0] = 0.012
-                solref_view[geom_index, 1] = 1.5
+                solref_view[geom_index, :] = (0.02, 1.5)
+                priority_view[geom_index] = 0
             model.geom_margin = wp.array(geom_margin, dtype=model.geom_margin.dtype, device=model.geom_margin.device)
             model.geom_gap = wp.array(geom_gap, dtype=model.geom_gap.dtype, device=model.geom_gap.device)
             model.geom_solref = wp.array(geom_solref, dtype=model.geom_solref.dtype, device=model.geom_solref.device)
+            model.geom_priority = wp.array(geom_priority, dtype=model.geom_priority.dtype, device=model.geom_priority.device)
 
         # Newton was allowing Panda finger joints to cross their 0 m lower limit.
         # Strengthen the actual MuJoCo joint-limit constraint instead of limiting the
@@ -802,8 +860,8 @@ def harden_contacts():
                     joint_solimp[joint_index, 0] = 0.99
                     joint_solimp[joint_index, 1] = 0.999
                     joint_solimp[joint_index, 2] = 0.001
-                    joint_solref[joint_index, 0] = 0.02
-                    joint_solref[joint_index, 1] = 1.0
+                    joint_solref[joint_index, 0] = 0.008
+                    joint_solref[joint_index, 1] = 2.0
                     joint_margin[joint_index] = 0.001
                     hardened_joint_ids.append(joint_index)
             model.jnt_solimp = wp.array(jnt_solimp, dtype=model.jnt_solimp.dtype, device=model.jnt_solimp.device)
@@ -811,7 +869,7 @@ def harden_contacts():
             model.jnt_margin = wp.array(jnt_margin, dtype=model.jnt_margin.dtype, device=model.jnt_margin.device)
         print(
             f"[INFO] thin_grasp_constraints_hardened geoms={hardened_geom_ids} "
-            f"finger_joints={hardened_joint_ids}", flush=True
+            f"finger_joints={hardened_joint_ids} collision_masks={collision_masks_applied}", flush=True
         )
     except Exception as error:  # noqa: BLE001 - the field is version-specific
         print(f"[WARN] harden_contacts could not write geom_solimp: {error}", flush=True)
@@ -1217,7 +1275,11 @@ def set_standalone_panel_start(panel, task_mode):
     pose = panel.data.default_root_pose.torch.clone()
     if task_mode == "lift":
         # Pull task has already cleared the guards; keep the panel horizontal.
-        pose[0, 0] = PANEL_STAGING_POSITION[0] - PANEL_PULL_DISTANCE
+        pulled_x = PANEL_STAGING_POSITION[0] - PANEL_PULL_DISTANCE
+        rotation_clear_x = (
+            RACK_COVER_FRONT_X - PANEL_HALF_LENGTH - RACK_ROTATION_CLEARANCE_X
+        )
+        pose[0, 0] = min(pulled_x, rotation_clear_x)
         pose[0, 1] = PANEL_STAGING_POSITION[1]
         pose[0, 2] = PANEL_STAGING_POSITION[2]
         pose[0, 3:7] = panel.data.default_root_pose.torch[0, 3:7]
@@ -1262,9 +1324,9 @@ def main():
             # constraint stiffer than the normal one, but 50 was chasing a slip that
             # came from too little grip force, not from the solver.
             impratio=10.0,
-            iterations=250,
-            ls_iterations=100,
-            ccd_iterations=128,
+            iterations=80,
+            ls_iterations=30,
+            ccd_iterations=32,
             tolerance=1.0e-8,
             update_data_interval=1,
             use_mujoco_contacts=True,
@@ -1346,7 +1408,7 @@ def main():
     captured_frame = 0
     sim_dt = sim.get_physics_dt()
     if args_cli.auto_ops:
-        settle_steps = 8 if args_cli.auto_ops_task in ("lift", "hang") else 60
+        settle_steps = 1 if args_cli.auto_ops_task in ("lift", "hang") else 60
         print(f"[INFO] auto_ops_settle_steps={settle_steps}", flush=True)
         for _ in range(settle_steps):
             for robot in (left_robot, right_robot):

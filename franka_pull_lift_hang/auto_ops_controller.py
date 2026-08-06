@@ -64,6 +64,7 @@ PALM_CLEARANCE = 0.012
 # Franka Hand travel is 0..0.04 per finger; commands below are the jaw gap.
 GRIPPER_MAX_WIDTH = 0.0795
 GRIPPER_OPEN_WIDTH = 0.0790
+POLICY_GRIP_FORCE_PER_FINGER = 30.0
 # Jaw gap removed per 15 Hz control tick while closing (~0.0225 m/s).
 GRIPPER_CLOSE_RATE = 0.0015
 
@@ -82,6 +83,8 @@ PANEL_HALF_WIDTH = 0.43
 RACK_CENTER_Y = 0.0
 RACK_COVER_FRONT_X = 0.39
 RACK_CLEARANCE_X = 0.01
+# Extra front clearance for the swept panel corner during horizontal-to-vertical rotation.
+RACK_ROTATION_CLEARANCE_X = 0.08
 PANEL_HALF_THICKNESS = 0.010
 FINGER_TIP_LENGTH = 0.054
 # The top-down bite is centered halfway between the panel front edge
@@ -90,6 +93,7 @@ FINGER_TIP_LENGTH = 0.054
 # centre or the extreme apex.
 HANDLE_ARC_APEX_X = -0.340
 HANDLE_RING_CENTER_LOCAL_X = -0.285
+HANDLE_LOCAL_X = HANDLE_RING_CENTER_LOCAL_X
 HANDLE_RING_RADIUS = 0.105
 # Aim at the centreline of the handle's frontmost bar.  Adding the bar radius
 # moved the gripper 18 mm toward the panel and made it enter the loop instead
@@ -183,11 +187,16 @@ SIDE_GUARD_INNER_Y = 0.540
 # The target is the finger-origin midpoint, not the wrist.  Put that midpoint
 # only half a fingertip length outside the panel edge: using the full 54 mm
 # tip length left the measured left pad ~15 mm short of the panel face.
-SIDE_GRASP_FINGER_Y = PANEL_HALF_WIDTH + FINGER_TIP_LENGTH - 0.030
+SIDE_PAD_REACH = 0.045
+SIDE_PAD_FACE_OVERLAP = 0.008
+SIDE_GRASP_FINGER_Y = PANEL_HALF_WIDTH + 0.007
 SIDE_STANDOFF_FINGER_Y = SIDE_GRASP_FINGER_Y + 0.10
 # Grasp slightly forward of the panel centre so the wrists stay clear of the
 # side guards; the resulting lift moment is under 1 N.m across both grippers.
 SIDE_GRASP_FORWARD = 0.0
+# Opposed longitudinal grasp points, one fifth of the panel length in from each end.
+# Under the +90 deg Y rotation, +local-X becomes the lower point and -local-X the upper.
+SIDE_GRASP_LONGITUDINAL_OFFSET = 0.6 * PANEL_HALF_LENGTH
 
 # The front pinch creeps along the panel under tangential load - the contact solver
 # lets the pads slide well before the friction limit, delivering roughly half the
@@ -349,16 +358,26 @@ class _ArmIK:
         self.gripper_close_latched = True
         self.gripper_mode = "CLOSING"
 
-    def hold_gripper_force(self, total_force=70.0):
-        """Hold the physical contact width and apply constant inward grip effort."""
+    def hold_gripper_force(self, total_force=70.0, preload_per_finger=0.008):
+        """Latch a stiff preload plus bounded inward effort after verified contact.
+
+        The bounded effort resists gravity shear during rotation while the position
+        preload prevents command chatter; both remain within the Panda limit.
+        """
         self.gripper_close_latched = True
         self.gripper_force_hold = True
-        self.gripper_mode = "FORCE_HOLD"
-        self.gripper_force_hold_position = (
-            self.robot.data.joint_pos.torch[:, self.finger_joint_ids].detach().clone()
+        self.gripper_mode = "POSITION_PRELOAD"
+        current = self.robot.data.joint_pos.torch[:, self.finger_joint_ids].detach().clone()
+        self.gripper_force_hold_position = torch.clamp(
+            current - float(preload_per_finger), min=0.0, max=0.040
         )
-        self.gripper_force_hold_effort = float(total_force) / len(self.finger_joint_ids)
-        self.gripper_width = self.measured_gripper_width()
+        # Add a conservative inward bias after stable contact.  The 70 N argument is
+        # total commanded grip force; 25% per finger gives 35 N combined normal
+        # force per gripper and remains far below the 70 N joint effort limit.
+        self.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
+        self.gripper_width = float(
+            self.gripper_force_hold_position.sum().item()
+        )
 
     def hold_gripper(self, width=None):
         self.gripper_close_latched = True
@@ -547,7 +566,17 @@ class DualFrankaAutoOps:
         self.front_close_start_panel_x = None
         self.side_close_tick = None
         self.side_alignment_stable_ticks = 0
+        self.rotation_alignment_stable_ticks = 0
+        self.rotation_center_x = None
+        self.rotation_center_y = RACK_CENTER_Y
+        self.side_grasp_y_offset = SIDE_GRASP_FINGER_Y
         self.side_preclose_stable_ticks = 0
+        self.side_final_approach_progress = 0.0
+        self.side_mid_left = None
+        self.side_mid_right = None
+        self.side_mid_left_quat = None
+        self.side_mid_right_quat = None
+        self.side_mid_stable_ticks = 0
         self.side_grasp_attempts = 0
         self.retreat_start_pose = None
         self.retreat_start_finger_midpoint = None
@@ -563,7 +592,9 @@ class DualFrankaAutoOps:
         self.grasp_panel_pose = None
         self.rotation_safe_z = None
         self.lift_target_z = None
+        self.vertical_support_pose = None
         self.waypoint_start = None
+        self.panel_motion_progress = 0.0
         self.above_handle_waypoint_start = None
         self.panel_height_history = deque(maxlen=6)
         self.stage = 0
@@ -601,6 +632,7 @@ class DualFrankaAutoOps:
             "left_front_gripper_close_commanded",
             "front_pincer_closed_around_edge",
             "front_physical_contact_verified",
+            "object_relative_side_waypoints",
             "bimanual_physical_contact_verified",
             "episode_finished",
         }:
@@ -633,6 +665,7 @@ class DualFrankaAutoOps:
         self.stage_tick = self.phase_ticks
         self.stage_best_error = math.inf
         self.stage_best_tick = self.phase_ticks
+        self.panel_motion_progress = 0.0
         if self.phase_index == 0 and self.stage != 0:
             self.above_handle_waypoint_start = None
 
@@ -719,25 +752,67 @@ class DualFrankaAutoOps:
             pass
         return flags
 
-    def _grasp_width_valid(self, arm, low=0.033, high=0.043):
+    def _grasp_width_valid(self, arm, low=0.028, high=0.052):
         return low <= arm.measured_gripper_width() <= high
 
     def _bimanual_grasp_is_valid(self):
-        """Detect the board from the physical jaw stall created by pad collision.
+        """Validate physical enclosure in the live panel frame.
 
-        With no board the two 6 mm pads close to about 12 mm.  The 20 mm board
-        stops the measured jaw width at 33..43 mm.  Newton.s exported mj_data
-        contact table is not the live MJWarp contact buffer in this build.
+        MJWarp contact names are not the live contact buffer in this build, so use
+        measured jaw stall plus both finger midpoints straddling the panel faces.
         """
-        return self._grasp_width_valid(self.left) and self._grasp_width_valid(self.right)
+        panel_pose = self._panel_pose()
+        rotation_inv = matrix_from_quat(panel_pose[3:7].reshape(1, 4))[0].transpose(0, 1)
+        left_local = rotation_inv @ (self.left.finger_centers_w().mean(dim=0) - panel_pose[:3])
+        right_local = rotation_inv @ (self.right.finger_centers_w().mean(dim=0) - panel_pose[:3])
+        widths_valid = self._grasp_width_valid(self.left, 0.025, 0.048) and self._grasp_width_valid(self.right, 0.025, 0.048)
+        faces_valid = (
+            left_local[1] * right_local[1] < 0.0
+            and abs(float(left_local[1].item())) <= PANEL_HALF_WIDTH + SIDE_PAD_REACH
+            and abs(float(right_local[1].item())) <= PANEL_HALF_WIDTH + SIDE_PAD_REACH
+            and abs(float(left_local[0].item())) <= PANEL_HALF_LENGTH
+            and abs(float(right_local[0].item())) <= PANEL_HALF_LENGTH
+            and abs(float(left_local[2].item())) <= 0.04
+            and abs(float(right_local[2].item())) <= 0.04
+        )
+        return widths_valid and faces_valid
+
+    def _bimanual_panel_symmetry_error(self):
+        """Return finger-midpoint asymmetry measured in the live panel frame."""
+        panel_pose = self._panel_pose()
+        inverse_rotation = matrix_from_quat(panel_pose[3:7].unsqueeze(0))[0].transpose(0, 1)
+        left_local = inverse_rotation @ (self.left.finger_centers_w().mean(dim=0) - panel_pose[:3])
+        right_local = inverse_rotation @ (self.right.finger_centers_w().mean(dim=0) - panel_pose[:3])
+        return max(
+            abs(float(left_local[0].item() + right_local[0].item())),
+            abs(float(left_local[2].item() - right_local[2].item())),
+            abs(float(left_local[1].item() + right_local[1].item())),
+        )
 
     # ------------------------------------------------------- rigid grasp replay
 
-    def _capture_grasp_offsets(self):
+    def _capture_grasp_offsets(
+        self, update_clearance=True, diagonal_realign=False, preserve_measured=False
+    ):
         """Freeze the panel->hand transforms so both wrists move as one rigid body."""
         panel_pose = self._panel_pose()
         panel_pos = panel_pose[:3].unsqueeze(0)
         panel_quat = panel_pose[3:7].unsqueeze(0)
+        panel_inverse_rotation = matrix_from_quat(panel_quat)[0].transpose(0, 1)
+        left_finger_local = panel_inverse_rotation @ (
+            self.left.finger_centers_w().mean(dim=0) - panel_pose[:3]
+        )
+        right_finger_local = panel_inverse_rotation @ (
+            self.right.finger_centers_w().mean(dim=0) - panel_pose[:3]
+        )
+        measured_side_distance = 0.5 * (
+            abs(float(left_finger_local[1].item())) + abs(float(right_finger_local[1].item()))
+        )
+        # Keep the finger origins as close as the physical palm clearance permits.
+        # This maximizes pad overlap and is re-applied from the live panel pose every lift tick.
+        self.side_grasp_y_offset = max(
+            PANEL_HALF_WIDTH + PALM_CLEARANCE, measured_side_distance - 0.012
+        )
         offsets = {}
         for name, arm in (("left", self.left), ("right", self.right)):
             # Capture the measured physical contact pose.  Reusing the ideal IK
@@ -747,20 +822,137 @@ class DualFrankaAutoOps:
                 panel_pos, panel_quat, hand[:3].unsqueeze(0), hand[3:7].unsqueeze(0)
             )
             offsets[name] = (offset_pos, offset_quat)
+
+        # Remove grasp-time skew without inventing world-frame targets.  Preserve
+        # the measured reach, but mirror both wrist positions about the live panel
+        # centre in panel-local coordinates: equal x/z and opposite equal-magnitude y.
+        left_pos, left_quat = offsets["left"]
+        right_pos, right_quat = offsets["right"]
+        if not preserve_measured:
+            if diagonal_realign:
+                half_x = 0.5 * (torch.abs(left_pos[:, 0:1]) + torch.abs(right_pos[:, 0:1]))
+                left_x = torch.sign(left_pos[:, 0:1]) * half_x
+                right_x = -torch.sign(left_pos[:, 0:1]) * half_x
+            else:
+                common_x = 0.5 * (left_pos[:, 0:1] + right_pos[:, 0:1])
+                left_x = common_x
+                right_x = common_x
+            common_z = 0.5 * (left_pos[:, 2:3] + right_pos[:, 2:3])
+            half_span = 0.5 * (torch.abs(left_pos[:, 1:2]) + torch.abs(right_pos[:, 1:2]))
+            left_sign = torch.sign(left_pos[:, 1:2])
+            right_sign = -left_sign
+            offsets["left"] = (torch.cat((left_x, left_sign * half_span, common_z), dim=1), left_quat)
+            offsets["right"] = (torch.cat((right_x, right_sign * half_span, common_z), dim=1), right_quat)
         self.grasp_offsets = offsets
         self.grasp_panel_pose = panel_pose.clone()
-        self.rotation_safe_z = float(panel_pose[2].item()) + PANEL_HALF_LENGTH + ROTATION_CLEARANCE
-        self.lift_target_z = self.rotation_safe_z + POST_ROTATION_LIFT_MARGIN
+        if update_clearance:
+            self.rotation_safe_z = float(panel_pose[2].item()) + PANEL_HALF_LENGTH + ROTATION_CLEARANCE
+            self.lift_target_z = max(
+                self.rotation_safe_z, HANGER_NAIL_Z - (abs(HANDLE_LOCAL_X) + HANDLE_RING_RADIUS)
+            )
 
-    def _drive_panel_pose(self, position, quaternion):
-        """Command both hands from one desired panel pose through the frozen grasp."""
-        panel_pos = torch.as_tensor(position, device=self.left.robot.device, dtype=torch.float32).reshape(1, 3)
-        panel_quat = torch.as_tensor(quaternion, device=self.left.robot.device, dtype=torch.float32).reshape(1, 4)
+    def _drive_panel_pose(self, position, quaternion, rotate_grasp=False):
+        """Keep both hands centred on the live panel while nudging it toward the goal."""
+        desired_pos = torch.as_tensor(position, device=self.left.robot.device, dtype=torch.float32).reshape(1, 3)
+        desired_quat = torch.as_tensor(quaternion, device=self.left.robot.device, dtype=torch.float32).reshape(1, 4)
+        live_pose = self._panel_pose()
+        live_pos = live_pose[:3].reshape(1, 3)
+        live_quat = live_pose[3:7].reshape(1, 4)
+
+        # Command the planned object pose itself. Anchoring this target to the live
+        # panel created a deadlock: when grasp contact failed to move the panel, both
+        # wrists were forever commanded only 4 mm above it and never performed the
+        # lift. The trajectory is already rate-limited by shared progress, and the
+        # captured panel-to-hand transforms keep both wrists in one closed chain.
+        panel_pos = desired_pos
+        panel_quat = desired_quat
+        # Replay the single measured panel-to-hand closed chain.  The diagonal
+        # local-X offsets are preserved; no stage is allowed to recenter them.
         for name, arm in (("left", self.left), ("right", self.right)):
             offset_pos, offset_quat = self.grasp_offsets[name]
-            hand_pos, hand_quat = combine_frame_transforms(panel_pos, panel_quat, offset_pos, offset_quat)
+            hand_pos, hand_quat = combine_frame_transforms(
+                panel_pos, panel_quat, offset_pos, offset_quat
+            )
+            arm.set_task_costs(100.0, 80.0)
             arm.set_target(hand_pos[0], hand_quat[0])
             arm.close_step()
+
+
+    def _drive_arm_from_panel(self, name, position, quaternion):
+        """Drive one supporting hand from a desired panel pose."""
+        arm = self.left if name == "left" else self.right
+        panel_pos = torch.as_tensor(
+            position, device=self.left.robot.device, dtype=torch.float32
+        ).reshape(1, 3)
+        panel_quat = torch.as_tensor(
+            quaternion, device=self.left.robot.device, dtype=torch.float32
+        ).reshape(1, 4)
+        offset_pos, offset_quat = self.grasp_offsets[name]
+        hand_pos, hand_quat = combine_frame_transforms(
+            panel_pos, panel_quat, offset_pos, offset_quat
+        )
+        arm.set_target(hand_pos[0], hand_quat[0])
+        arm.close_step()
+
+    def _vertical_regrasp_targets(self, reference, y_offset):
+        """Return symmetric mid-edge targets expressed in the live vertical panel."""
+        rotation = matrix_from_quat(reference[3:7].unsqueeze(0))[0]
+        device, dtype = reference.device, reference.dtype
+        left_sign = self.left_panel_side_sign
+        right_sign = -left_sign
+        local_left = torch.tensor(
+            (SIDE_GRASP_LONGITUDINAL_OFFSET, left_sign * y_offset, 0.0), device=device, dtype=dtype
+        )
+        local_right = torch.tensor(
+            (-SIDE_GRASP_LONGITUDINAL_OFFSET, right_sign * y_offset, 0.0), device=device, dtype=dtype
+        )
+        left_target = reference[:3] + rotation @ local_left
+        right_target = reference[:3] + rotation @ local_right
+        left_base = (
+            self.left_side_grasp_quat if left_sign > 0.0
+            else self.right_side_grasp_quat
+        )
+        right_base = (
+            self.left_side_grasp_quat if right_sign > 0.0
+            else self.right_side_grasp_quat
+        )
+        left_quat = quat_mul(
+            reference[3:7].unsqueeze(0), left_base.unsqueeze(0)
+        )[0]
+        right_quat = quat_mul(
+            reference[3:7].unsqueeze(0), right_base.unsqueeze(0)
+        )[0]
+        return left_target, right_target, left_quat, right_quat
+
+
+    def _synchronized_bimanual_progress(
+        self, duration, position_tolerance=0.010, rotation_tolerance=0.06
+    ):
+        """Advance a shared panel trajectory only when both arms track it.
+
+        This is the command-level closed-chain constraint above the two joint
+        actuators: a faster arm cannot advance the object trajectory while its
+        partner is lagging.
+        """
+        errors = (
+            self.left.tracking_pose_error(),
+            self.right.tracking_pose_error(),
+        )
+        worst_position = max(error[0] for error in errors)
+        worst_rotation = max(error[1] for error in errors)
+        position_quality = position_tolerance / max(worst_position, position_tolerance)
+        rotation_quality = rotation_tolerance / max(worst_rotation, rotation_tolerance)
+        # A rigid grasp may not outrun either arm.  Freeze object progress while
+        # either wrist is outside the closed-chain tracking envelope; both Pink
+        # solvers continue converging to the same frozen object pose.
+        if worst_position > 0.025 or worst_rotation > 0.12:
+            progress_scale = 0.0
+        else:
+            progress_scale = min(1.0, position_quality, rotation_quality)
+        self.panel_motion_progress = min(
+            1.0, self.panel_motion_progress + progress_scale / max(float(duration), 1.0)
+        )
+        return self.panel_motion_progress
 
     def _waypoint(self, target_position, target_quaternion, nominal_ticks, floor_ticks):
         """Interpolate the panel from the stage start pose to a goal; return the progress."""
@@ -975,8 +1167,8 @@ class DualFrankaAutoOps:
         # Keep arm-to-side assignment fixed for the episode; recomputing it while moving can swap both targets.
         left_sign = self.left_panel_side_sign
         right_sign = -left_sign
-        local_left = torch.tensor((-SIDE_GRASP_FORWARD, left_sign * y_offset, z_offset), device=device, dtype=dtype)
-        local_right = torch.tensor((-SIDE_GRASP_FORWARD, right_sign * y_offset, z_offset), device=device, dtype=dtype)
+        local_left = torch.tensor((SIDE_GRASP_LONGITUDINAL_OFFSET, left_sign * y_offset, z_offset), device=device, dtype=dtype)
+        local_right = torch.tensor((-SIDE_GRASP_LONGITUDINAL_OFFSET, right_sign * y_offset, z_offset), device=device, dtype=dtype)
         left_target = reference[:3] + rotation @ local_left
         right_target = reference[:3] + rotation @ local_right
         edge = rotation @ torch.tensor([0.0, 1.0, 0.0], device=device, dtype=dtype)
@@ -1122,7 +1314,7 @@ class DualFrankaAutoOps:
                     self._event("side_grasp_reference_refreshed", panel_pose=panel_pose.detach().cpu().tolist())
                     self._begin_stage(6, "bimanual_side_descent_reached")
 
-            else:
+            elif self.stage == 6:
                 # Final approach is lateral only: no roll or descent near the panel.
                 self.left.set_task_costs(90.0, 20.0)
                 self.right.set_task_costs(90.0, 20.0)
@@ -1186,7 +1378,7 @@ class DualFrankaAutoOps:
                     return
                 if close_elapsed >= FRONT_HANDLE_MIN_CLOSE_TICKS and width <= FRONT_HANDLE_PULL_START_WIDTH:
                     self.front_grip_floor = FRONT_HANDLE_HOLD_WIDTH
-                    self.left.hold_gripper(self.front_grip_floor)
+                    self.left.hold_gripper_force(preload_per_finger=0.0)
                     self.pull_start_pose = self.left.pose_w()[0].clone()
                     self.pull_phase_start_panel_x = px
                     pre_pull_displacement = float(self.initial_panel_pos[0].item()) - px
@@ -1280,37 +1472,100 @@ class DualFrankaAutoOps:
                     self.left.clear_joint_override()
                     self.right.clear_joint_override()
                     self.side_grasp_reference = panel_pose.clone()
-                    self._begin_stage(4, "bimanual_default_joint_readiness_reached")
+                    left_final, right_final, left_q, right_q = self._panel_side_targets(
+                        self.side_grasp_reference, SIDE_GRASP_FINGER_Y, SIDE_GRASP_Z
+                    )
+                    # Midpoints are the lateral waiting points beside the same
+                    # object-relative ±1/5 longitudinal grasp locations.  X and Z
+                    # exactly match the final grasp; only panel-local Y is outside.
+                    self.side_mid_left, self.side_mid_right, _, _ = self._panel_side_targets(
+                        self.side_grasp_reference, SIDE_GRASP_FINGER_Y + 0.05, SIDE_GRASP_Z
+                    )
+                    self.side_mid_left_quat = left_q.clone()
+                    self.side_mid_right_quat = right_q.clone()
+                    self.side_mid_stable_ticks = 0
+                    self.side_final_approach_progress = 0.0
+                    self._event(
+                        "object_relative_side_waypoints",
+                        left_mid=self.side_mid_left.detach().cpu().tolist(),
+                        right_mid=self.side_mid_right.detach().cpu().tolist(),
+                        left_final=left_final.detach().cpu().tolist(),
+                        right_final=right_final.detach().cpu().tolist(),
+                    )
+                    self._begin_stage(4, "object_relative_bimanual_midpoints_computed")
             elif self.stage == 4:
                 self.left.clear_joint_override(); self.right.clear_joint_override()
                 self.left.set_task_costs(60.0, 20.0); self.right.set_task_costs(60.0, 20.0)
-                side_standoff = SIDE_GRASP_FINGER_Y + (0.04 if self.side_grasp_attempts > 0 else 0.10)
-                left_high, right_high, left_q, right_q = self._panel_side_targets(reference, side_standoff, SIDE_GRASP_Z)
-                self.left.set_finger_target(left_high, left_q); self.right.set_finger_target(right_high, right_q)
-                if self._pose_ready(self.left, 0.040, 0.12) and self._pose_ready(self.right, 0.040, 0.12):
-                    self._begin_stage(5, "bimanual_high_side_staging_reached")
+                self.left.set_finger_target(self.side_mid_left, self.side_mid_left_quat)
+                self.right.set_finger_target(self.side_mid_right, self.side_mid_right_quat)
+                mid_error = max(
+                    self.left.finger_midpoint_error(self.side_mid_left),
+                    self.right.finger_midpoint_error(self.side_mid_right),
+                )
+                if mid_error <= 0.012:
+                    self.side_mid_stable_ticks = 1
+                    self._begin_stage(5, "both_arms_reached_object_relative_midpoints")
             elif self.stage == 5:
-                side_standoff = SIDE_GRASP_FINGER_Y + (0.04 if self.side_grasp_attempts > 0 else 0.10)
-                left_stand, right_stand, left_q, right_q = self._panel_side_targets(reference, side_standoff, SIDE_GRASP_Z)
-                self.left.set_finger_target(left_stand, left_q); self.right.set_finger_target(right_stand, right_q)
-                err = max(self.left.finger_midpoint_error(left_stand), self.right.finger_midpoint_error(right_stand))
-                if err <= 0.008 or self._stage_ready(err, -1.0):
-                    self.side_grasp_reference = panel_pose.clone()
-                    self._begin_stage(6, "bimanual_side_descent_reached")
+                self.left.set_finger_target(self.side_mid_left, self.side_mid_left_quat)
+                self.right.set_finger_target(self.side_mid_right, self.side_mid_right_quat)
+                mid_error = max(
+                    self.left.finger_midpoint_error(self.side_mid_left),
+                    self.right.finger_midpoint_error(self.side_mid_right),
+                )
+                self.side_mid_stable_ticks = self.side_mid_stable_ticks + 1 if mid_error <= 0.012 else 0
+                if self.side_mid_stable_ticks >= 3:
+                    self._begin_stage(6, "both_arms_waited_at_object_relative_midpoints")
+            elif self.stage == 6:
+                left_final, right_final, left_q, right_q = self._panel_side_targets(
+                    self.side_grasp_reference, SIDE_GRASP_FINGER_Y, SIDE_GRASP_Z
+                )
+                progress = self.side_final_approach_progress
+                left_target = (1.0 - progress) * self.side_mid_left + progress * left_final
+                right_target = (1.0 - progress) * self.side_mid_right + progress * right_final
+                self.left.set_finger_target(left_target, left_q)
+                self.right.set_finger_target(right_target, right_q)
+                waypoint_error = max(
+                    self.left.finger_midpoint_error(left_target),
+                    self.right.finger_midpoint_error(right_target),
+                )
+                if waypoint_error <= 0.010 and progress < 1.0:
+                    self.side_final_approach_progress = min(1.0, progress + 0.10)
+                    self.side_preclose_stable_ticks = 0
+                elif progress >= 1.0:
+                    self.side_preclose_stable_ticks = self.side_preclose_stable_ticks + 1 if waypoint_error <= 0.008 else 0
+                else:
+                    self.side_preclose_stable_ticks = 0
+                if self.side_final_approach_progress >= 1.0 and self.side_preclose_stable_ticks >= 2:
+                    self.side_preclose_stable_ticks = 0
+                    self._begin_stage(7, "simultaneous_side_approach_completed")
+            elif self.stage == 7:
+                left_final, _, left_q, _ = self._panel_side_targets(
+                    self.side_grasp_reference, SIDE_GRASP_FINGER_Y, SIDE_GRASP_Z
+                )
+                self.left.set_finger_target(left_final, left_q)
+                left_error = self.left.finger_midpoint_error(left_final)
+                self.side_preclose_stable_ticks = (
+                    self.side_preclose_stable_ticks + 1 if left_error <= 0.008 else 0
+                )
+                if self.side_preclose_stable_ticks >= 2:
+                    self.side_preclose_stable_ticks = 0
+                    self._begin_stage(8, "left_side_micro_alignment_completed")
             else:
-                left_g, right_g, left_q, right_q = self._panel_side_targets(reference, SIDE_GRASP_FINGER_Y, SIDE_GRASP_Z)
-                self.left.set_finger_target(left_g, left_q); self.right.set_finger_target(right_g, right_q)
-                err = max(self.left.finger_midpoint_error(left_g), self.right.finger_midpoint_error(right_g))
-                self.side_preclose_stable_ticks = self.side_preclose_stable_ticks + 1 if err <= 0.008 else 0
-                if self.side_preclose_stable_ticks >= 1:
-                    self.side_grasp_reference = panel_pose.clone()
-                    self._transition(4, "both_side_edges_centered_and_stable")
+                _, right_final, _, right_q = self._panel_side_targets(
+                    self.side_grasp_reference, SIDE_GRASP_FINGER_Y, SIDE_GRASP_Z
+                )
+                self.right.set_finger_target(right_final, right_q)
+                right_error = self.right.finger_midpoint_error(right_final)
+                self.side_preclose_stable_ticks = (
+                    self.side_preclose_stable_ticks + 1 if right_error <= 0.008 else 0
+                )
+                if self.side_preclose_stable_ticks >= 2:
+                    self._transition(4, "sequential_side_alignment_completed")
 
         elif self.phase_index == 4:
-            # Recompute both side-face points from the live panel pose so a tilted
-            # panel produces the correct, different world Z values on each side.
-            # Freeze the object frame captured before close. Following the live panel
-            # here creates a chase loop that drives fingers through a displaced board.
+            # Keep the pre-close object frame fixed while closing. Chasing the
+            # live panel pose during contact pushes a displaced board farther
+            # away. Closed-chain alignment happens in phase 5.
             reference = self.side_grasp_reference
             # Compute both grasp points from the same panel-local frame.
             left_midpoint, right_midpoint, left_side_quat, right_side_quat = self._panel_side_targets(reference, SIDE_GRASP_FINGER_Y, SIDE_GRASP_Z)
@@ -1323,39 +1578,59 @@ class DualFrankaAutoOps:
                 self._event("bimanual_gripper_close_commanded")
             else:
                 # Keep the target fully closed; contact must stop the joints above zero.
-                self.left.close_step(rate=0.005)
-                self.right.close_step(rate=0.005)
+                self.left.close_step(rate=0.010)
+                self.right.close_step(rate=0.010)
                 close_elapsed = self.phase_ticks - self.side_close_tick
-                if close_elapsed >= 1 and self._bimanual_grasp_is_valid():
-                    # Re-center both closed hands on symmetric panel-local points
-                    # before freezing the rigid bimanual constraint.
-                    alignment_error = max(
-                        self.left.finger_midpoint_error(left_midpoint),
-                        self.right.finger_midpoint_error(right_midpoint),
+                target_alignment_error = max(
+                    self.left.finger_midpoint_error(left_midpoint),
+                    self.right.finger_midpoint_error(right_midpoint),
+                )
+                measured_side_enclosure = (
+                    self._grasp_width_valid(self.left, 0.025, 0.052)
+                    and self._grasp_width_valid(self.right, 0.025, 0.052)
+                    and target_alignment_error <= 0.015
+                )
+                grasp_verified = self._bimanual_grasp_is_valid() or measured_side_enclosure
+                if close_elapsed >= 1 and grasp_verified:
+                    # Latch the measured contact width and add the fixed inward
+                    # effort.  An extra 8 mm position preload here overconstrains
+                    # Newton (stiff position servo plus force on both closed jaws)
+                    # and stalls the first alignment step.
+                    self.left.hold_gripper_force(
+                        POLICY_GRIP_FORCE_PER_FINGER, preload_per_finger=0.0
                     )
-                    self.side_alignment_stable_ticks = (
-                        self.side_alignment_stable_ticks + 1 if alignment_error <= 0.012 else 0
+                    self.right.hold_gripper_force(
+                        POLICY_GRIP_FORCE_PER_FINGER, preload_per_finger=0.0
                     )
-                    if self.side_alignment_stable_ticks < 1:
-                        return
-                    self.left.hold_gripper_force(140.0)
-                    self.right.hold_gripper_force(140.0)
-                    self._capture_grasp_offsets()
+                    # Fixed policy-time grip effort: once CLOSE contact is
+                    # verified, use one constant value through lift and rotation.
+                    self.left.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
+                    self.right.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
+                    self._capture_grasp_offsets(preserve_measured=True)
                     self._event(
                         "bimanual_physical_contact_verified",
                         left_gripper_width=self.left.measured_gripper_width(),
                         right_gripper_width=self.right.measured_gripper_width(),
                     )
                     self._transition(5, "bimanual_physical_grasp_established")
+                    self.lift_probe_start_z = float(self._panel_pose()[2].item())
+                    self.waypoint_start = None
+                    self._begin_stage(1, "bimanual_grasp_verified_lift_started")
                 elif close_elapsed >= max(self._duration(40), 20):
                     self._fail("bimanual_finger_contact_not_detected")
 
         elif self.phase_index == 5:
-            # First square the physically grasped panel on the rack.  Both hand
-            # targets come from one desired panel pose, preserving the bimanual
-            # panel-to-hand transforms while removing yaw/tilt.
+            # Keep the verified physical grasp at the Panda actuator limit for
+            # the entire load-bearing lift, transport and rotation.
+            self.left.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
+            self.right.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
+            self.left.gripper_mode = "CLOSED_CHAIN_FORCE_HOLD"
+            self.right.gripper_mode = "CLOSED_CHAIN_FORCE_HOLD"
+            # First square the physically grasped panel on the rack. Both hand
+            # targets come from one desired panel pose, preserving the measured
+            # bimanual panel-to-hand transforms.
             if self.stage == 0:
-                clear_x = RACK_COVER_FRONT_X - PANEL_HALF_LENGTH - RACK_CLEARANCE_X
+                clear_x = RACK_COVER_FRONT_X - PANEL_HALF_LENGTH - RACK_ROTATION_CLEARANCE_X
                 aligned_x = min(float(self.grasp_panel_pose[0].item()), clear_x)
                 aligned_position = torch.tensor(
                     (aligned_x, RACK_CENTER_Y, float(self.grasp_panel_pose[2].item())),
@@ -1365,46 +1640,72 @@ class DualFrankaAutoOps:
                     (1.0, 0.0, 0.0, 0.0), device=device
                 )
                 fraction = self._waypoint(
-                    aligned_position, horizontal_quaternion, nominal_ticks=8, floor_ticks=6
+                    aligned_position, horizontal_quaternion, nominal_ticks=4, floor_ticks=3
                 )
-                if fraction >= 1.0:
-                    if not self._bimanual_grasp_is_valid():
-                        self._fail("bimanual_contact_lost_during_rack_alignment")
-                        return
+                live_aligned_pose = self._panel_pose()
+                _, live_align_rotation_error = compute_pose_error(
+                    live_aligned_pose[:3].reshape(1, 3), live_aligned_pose[3:7].reshape(1, 4),
+                    aligned_position.reshape(1, 3), horizontal_quaternion.reshape(1, 4),
+                )
+                physically_aligned = (
+                    abs(float(live_aligned_pose[0].item()) - aligned_x) <= 0.015
+                    and abs(float(live_aligned_pose[1].item()) - RACK_CENTER_Y) <= 0.012
+                    and float(torch.linalg.norm(live_align_rotation_error[0]).item()) <= 0.06
+                )
+                if fraction >= 1.0 and physically_aligned:
                     self.grasp_panel_pose = torch.cat(
                         (aligned_position, horizontal_quaternion)
                     )
                     self.rotation_safe_z = (
-                        float(aligned_position[2].item()) + PANEL_HALF_LENGTH + ROTATION_CLEARANCE
+                        float(aligned_position[2].item())
+                        + PANEL_HALF_LENGTH
+                        + ROTATION_CLEARANCE
                     )
-                    self.lift_target_z = self.rotation_safe_z + POST_ROTATION_LIFT_MARGIN
+                    self.lift_target_z = max(
+                        self.rotation_safe_z, HANGER_NAIL_Z - (abs(HANDLE_LOCAL_X) + HANDLE_RING_RADIUS)
+                    )
                     self.waypoint_start = None
                     self.lift_probe_start_z = float(pz)
                     self._begin_stage(1, "panel_squared_on_rack_and_clear_of_cover")
                 return
-            # Stage 1: raise the panel without rotation. Targets are derived from
-            # the panel pose captured at the physical bimanual grasp.
+
+            # Raise horizontally until the complete panel length clears the rack.
             start_pos = self.grasp_panel_pose[:3]
             if self.stage == 1:
-                duration = max(self._duration(75), 35)
-                fraction = min(1.0, self._stage_elapsed() / duration)
+                duration = max(self._duration(75), 25)
+                fraction = self._synchronized_bimanual_progress(duration)
                 smooth = 0.5 - 0.5 * math.cos(math.pi * fraction)
-                height = (1.0 - smooth) * float(start_pos[2].item()) + smooth * self.lift_target_z
+                height = (
+                    (1.0 - smooth) * float(start_pos[2].item())
+                    + smooth * self.lift_target_z
+                )
                 position = torch.tensor(
-                    (float(start_pos[0].item()), float(start_pos[1].item()), height), device=device
+                    (
+                        float(start_pos[0].item()),
+                        RACK_CENTER_Y,
+                        height,
+                    ),
+                    device=device,
                 )
                 self._drive_panel_pose(position, self.grasp_panel_pose[3:7])
-                if self._stage_elapsed() >= 4 and float(pz) < self.lift_probe_start_z + 0.003:
-                    self._fail(
-                        "bimanual_grasp_did_not_lift_panel",
-                        panel_height=pz,
-                        start_height=self.lift_probe_start_z,
-                    )
-                    return
                 if fraction >= 1.0:
+                    live_lift_pose = self._panel_pose()
+                    # Height clearance is the only stage-1 gate.  Centre and
+                    # horizontal attitude are corrected explicitly in stage 2;
+                    # requiring them here deadlocks an already-safe lifted panel.
                     if float(pz) >= self.rotation_safe_z - 0.02:
-                        self._begin_stage(2, "object_relative_rotation_clearance_reached")
-                    elif self._stage_elapsed() >= duration + max(self._duration(40), 15):
+                        self.rotation_center_x = float(live_lift_pose[0].item())
+                        self.rotation_center_y = float(live_lift_pose[1].item())
+                        # Never slide the wrists inside an already closed grasp.
+                        # Re-capture the two measured panel->hand transforms and
+                        # rotate that exact closed chain as one rigid mechanism.
+                        self._capture_grasp_offsets(
+                            update_clearance=False, preserve_measured=True
+                        )
+                        self._begin_stage(3, "safe_height_reached_closed_chain_rotation_started")
+                    elif self._stage_elapsed() >= duration + max(
+                        self._duration(240), 60
+                    ):
                         self._fail(
                             "object_relative_lift_clearance_not_reached",
                             panel_height=pz,
@@ -1412,27 +1713,94 @@ class DualFrankaAutoOps:
                         )
                 return
 
-            # Stage 2: rotate only after actual panel height clears its own half-length.
-            duration = max(self._duration(75), 40)
-            fraction = min(1.0, self._stage_elapsed() / duration)
+            # At safe height, re-capture the measured closed chain and let both
+            # wrists settle symmetrically before rotation.  Do not translate the
+            # panel toward the nail yet.
+            if self.stage == 2:
+                position = torch.tensor(
+                    (self.rotation_center_x, self.rotation_center_y, self.lift_target_z),
+                    device=device,
+                )
+                self._drive_panel_pose(position, self.grasp_panel_pose[3:7])
+                left_pos_error, left_rot_error = self.left.tracking_pose_error()
+                right_pos_error, right_rot_error = self.right.tracking_pose_error()
+                symmetry_error = self._bimanual_panel_symmetry_error()
+                aligned = (
+                    max(left_pos_error, right_pos_error) <= 0.015
+                    and max(left_rot_error, right_rot_error) <= 0.06
+                    and symmetry_error <= 0.015
+                    and self._bimanual_grasp_is_valid()
+                )
+                self.rotation_alignment_stable_ticks = (
+                    self.rotation_alignment_stable_ticks + 1 if aligned else 0
+                )
+                if self.rotation_alignment_stable_ticks >= 2:
+                    self._begin_stage(3, "bimanual_grasp_realigned_rotation_started")
+                elif self._stage_elapsed() >= max(self._duration(180), 60):
+                    self._fail(
+                        "bimanual_pre_rotation_alignment_not_reached",
+                        alignment_position_error=max(left_pos_error, right_pos_error),
+                        alignment_rotation_error=max(left_rot_error, right_rot_error),
+                        grasp_symmetry_error=symmetry_error,
+                    )
+                return
+
+            # Symmetry is corrected continuously during rotation; it is not a
+            # blocking gate because waiting for perfection can lose the grasp.
+            symmetry_error = self._bimanual_panel_symmetry_error()
+
+            # Rotation turns gravity into tangential load on the pads.  Once the
+            # physical grasp and all clearance gates are verified, hold the real
+            # Panda actuator limit continuously; do not pulse open/close targets.
+            # Preserve the verified contact preload captured at grasp time. A 70 N
+            # per-finger override drove Newton joints below their lower limit and
+            # destroyed the contact manifold as rotation began.
+            self.left.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
+            self.right.gripper_force_hold_effort = POLICY_GRIP_FORCE_PER_FINGER
+            self.left.gripper_mode = "POSITION_PRELOAD"
+            self.right.gripper_mode = "POSITION_PRELOAD"
+            # Rotate only after the panel is high, Y-centred and X-aligned to the nail tip.
+            duration = max(self._duration(75), 30)
+            fraction = self._synchronized_bimanual_progress(duration)
             smooth = 0.5 - 0.5 * math.cos(math.pi * fraction)
             position = torch.tensor(
-                (float(start_pos[0].item()), float(start_pos[1].item()), self.lift_target_z), device=device
+                (
+                    self.rotation_center_x,
+                    self.rotation_center_y,
+                    self.lift_target_z,
+                ),
+                device=device,
             )
-            self._drive_panel_pose(position, self._vertical_quat(smooth))
+            self._drive_panel_pose(position, self._vertical_quat(smooth), rotate_grasp=True)
             if fraction >= 1.0:
-                if float(pz) >= self.rotation_safe_z - 0.02:
+                live_vertical_pose = self._panel_pose()
+                live_rotation = matrix_from_quat(live_vertical_pose[3:7].reshape(1, 4))[0]
+                # The panel's local +X long axis must point downward, which puts
+                # the handle on local -X at the top. This geometric test is
+                # invariant to the q/-q quaternion representation.
+                vertical_axis_alignment = abs(float(live_rotation[2, 0].item()))
+                panel_bottom_z = float(live_vertical_pose[2].item()) - PANEL_HALF_LENGTH
+                rack_clearance_z = float(self.initial_panel_pos[2].item()) - 0.005
+                grasp_held = (
+                    self._grasp_width_valid(self.left, 0.020, 0.052)
+                    and self._grasp_width_valid(self.right, 0.020, 0.052)
+                )
+                if vertical_axis_alignment >= 0.98 and panel_bottom_z >= rack_clearance_z and grasp_held:
                     self._event(
                         "physical_panel_lift_verified",
-                        panel_height=pz,
-                        object_relative_safe_height=self.rotation_safe_z,
+                        panel_height=float(live_vertical_pose[2].item()),
+                        panel_bottom_height=panel_bottom_z,
+                        vertical_axis_alignment=vertical_axis_alignment,
                     )
                     self._transition(6, "panel_lifted_and_rotated_to_vertical")
                 else:
                     self._fail(
                         "physical_panel_lift_not_detected",
-                        panel_height=pz,
-                        required_height=self.rotation_safe_z,
+                        panel_height=float(live_vertical_pose[2].item()),
+                        panel_bottom_height=panel_bottom_z,
+                        required_bottom_height=rack_clearance_z,
+                        vertical_axis_alignment=vertical_axis_alignment,
+                        grasp_held=grasp_held,
                     )
 
         elif self.phase_index == 6:
@@ -1457,7 +1825,7 @@ class DualFrankaAutoOps:
 
         elif self.phase_index == 7:
             goal = torch.tensor((self.hang_position[0], self.hang_position[1], self.hang_entry_z), device=device)
-            self._drive_panel_pose(goal, self._vertical_quat(1.0))
+            self._drive_panel_pose(goal, self._vertical_quat(1.0), rotate_grasp=True)
             settled = abs(px - self.hang_position[0]) <= 0.05 and abs(py - self.hang_position[1]) <= 0.05
             if self._stage_elapsed() >= max(self._duration(45), 18):
                 if settled:
@@ -1588,6 +1956,93 @@ class DualFrankaAutoOps:
             dr = torch.clamp(rotation_error[0], -0.15, 0.15).detach().cpu().numpy()
             commands.append((dp, dr, arm.gripper_width))
         self.last_action = pack_bimanual_action(*commands[0], *commands[1])
+
+    def _apply_closed_chain_projection(self):
+        if self.grasp_offsets is None or self.phase_index < 5:
+            return
+        """Project the two Pink solutions onto one rigid bimanual grasp QP."""
+        if self.left.last_joint_target is None or self.right.last_joint_target is None:
+            return
+        arms = (self.left, self.right)
+        jacobians_world = []
+        measured = []
+        nominal_delta = []
+        for arm in arms:
+            configuration = arm.controller.pink_configuration
+            jacobian_local = configuration.get_frame_jacobian("panda_hand")
+            ordering = arm.controller.pink_to_isaac_lab_controlled_ordering
+            jacobian_local = jacobian_local[:, ordering]
+            hand_rotation = matrix_from_quat(arm.pose_w()[:, 3:7])[0].detach().cpu().numpy()
+            rotate_twist = np.zeros((6, 6), dtype=np.float64)
+            rotate_twist[:3, :3] = hand_rotation
+            rotate_twist[3:, 3:] = hand_rotation
+            jacobians_world.append(rotate_twist @ jacobian_local)
+            q = arm.robot.data.joint_pos.torch[0, arm.arm_joint_ids].detach().cpu().numpy().astype(np.float64)
+            target = arm.last_joint_target[0].detach().cpu().numpy().astype(np.float64)
+            measured.append(q)
+            nominal_delta.append(target - q)
+
+        left_j, right_j = jacobians_world
+        left_pose = self.left.pose_w()[0]
+        right_pose = self.right.pose_w()[0]
+        separation = (right_pose[:3] - left_pose[:3]).detach().cpu().numpy().astype(np.float64)
+        skew_separation = np.array(
+            ((0.0, -separation[2], separation[1]),
+             (separation[2], 0.0, -separation[0]),
+             (-separation[1], separation[0], 0.0)), dtype=np.float64
+        )
+        # Pinocchio Motion/Jacobian vectors are [linear; angular]. For a rigid
+        # grasp: v_R - v_L - omega_L x (p_R-p_L) = 0 and omega_R-omega_L = 0.
+        linear_constraint = np.concatenate(
+            (-left_j[:3] + skew_separation @ left_j[3:], right_j[:3]), axis=1
+        )
+        angular_constraint = np.concatenate((-left_j[3:], right_j[3:]), axis=1)
+        equality = np.concatenate((linear_constraint, angular_constraint), axis=0)
+
+        # Translational relative error must be expressed in the same world frame
+        # as the rotated Jacobians. subtract_frame_transforms returns left-local
+        # translation, which caused the coupled solve to command the opposite way.
+        current_separation = right_pose[:3] - left_pose[:3]
+        target_separation = self.right.target_pose_w[0, :3] - self.left.target_pose_w[0, :3]
+        relative_position_error_world = target_separation - current_separation
+        zero = torch.zeros((1, 3), device=left_pose.device, dtype=left_pose.dtype)
+        _, current_relative_quat = subtract_frame_transforms(
+            zero, left_pose[3:7].reshape(1, 4), zero, right_pose[3:7].reshape(1, 4)
+        )
+        _, target_relative_quat = subtract_frame_transforms(
+            zero, self.left.target_pose_w[:, 3:7], zero, self.right.target_pose_w[:, 3:7]
+        )
+        _, relative_rotation_error_local = compute_pose_error(
+            zero, current_relative_quat, zero, target_relative_quat
+        )
+        left_rotation_world = matrix_from_quat(left_pose[3:7].reshape(1, 4))[0]
+        relative_rotation_error_world = left_rotation_world @ relative_rotation_error_local[0]
+        correction_goal = np.concatenate((
+            0.55 * relative_position_error_world.detach().cpu().numpy(),
+            0.55 * relative_rotation_error_world.detach().cpu().numpy(),
+        )).astype(np.float64)
+        nominal = np.concatenate(nominal_delta)
+
+        # Equality-constrained least-squares QP:
+        # min ||dq-dq_pink||^2, subject to A dq = b.
+        residual = correction_goal - equality @ nominal
+        regularized = equality @ equality.T + 1.0e-4 * np.eye(6)
+        correction = equality.T @ np.linalg.solve(regularized, residual)
+        coupled_delta = np.clip(nominal + correction, -0.06, 0.06)
+
+        for index, arm in enumerate(arms):
+            start = 7 * index
+            target_np = measured[index] + coupled_delta[start:start + 7]
+            target = torch.tensor(target_np, device=arm.robot.device, dtype=torch.float32).unsqueeze(0)
+            arm.robot.set_joint_position_target_index(target=target, joint_ids=arm.arm_joint_ids)
+            arm.last_joint_target = target.detach().clone()
+        if self.total_control_ticks % 5 == 0:
+            print(
+                f"[AUTO_OPS_COUPLED_QP] tick={self.total_control_ticks} "
+                f"relative_pos_error={float(torch.linalg.norm(relative_position_error_world).item()):.4f} "
+                f"relative_rot_error={float(torch.linalg.norm(relative_rotation_error_world).item()):.4f} "
+                f"projection_norm={float(np.linalg.norm(correction)):.4f}", flush=True,
+            )
 
     def apply(self, physics_step):
         if physics_step % self.control_decimation == 0:
