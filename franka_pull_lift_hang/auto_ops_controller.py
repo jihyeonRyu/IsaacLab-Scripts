@@ -117,6 +117,7 @@ HANDLE_ABOVE_MARGIN_Z = 0.300
 HANDLE_EDGE_INSET_X = 0.0
 HANGER_NAIL_X = 0.55
 HANGER_NAIL_Z = 1.25
+HANGER_NAIL_LENGTH = 0.090
 FRONT_RAIL_HEIGHT = 0.130
 SIDE_RAIL_HEIGHT = 0.130
 SIDE_RAIL_CENTER_Y = 0.4025
@@ -219,7 +220,7 @@ PULL_RAIL_CENTER_Y = 0.0
 PANEL_LIFT_Z = 0.92  # legacy fallback; runtime targets are object-relative
 ROTATION_CLEARANCE = 0.14
 POST_ROTATION_LIFT_MARGIN = 0.06
-HANG_NAIL_CLEARANCE = 0.08
+HANG_NAIL_CLEARANCE = 0.02
 
 
 class _ArmIK:
@@ -629,12 +630,7 @@ class DualFrankaAutoOps:
         return self.panel.data.root_pos_w.torch[0]
 
     def _panel_pose(self):
-        """Panel pose with the quaternion normalised to wxyz.
-
-        Isaac Lab 3.0.0-beta2's Newton ``RigidObject`` reports root quaternions as
-        (x, y, z, w) while ``Articulation`` poses and ``isaaclab.utils.math`` are all
-        (w, x, y, z).  Reorder on read so every quaternion below this line is wxyz.
-        """
+        """Panel pose in the controller's legacy internal wxyz convention."""
         pose = self.panel.data.root_pose_w.torch[0]
         return torch.cat((pose[:3], pose[[6, 3, 4, 5]]))
 
@@ -642,7 +638,8 @@ class DualFrankaAutoOps:
         """Actual handle-ring center from the live panel transform."""
         if panel_pose is None:
             panel_pose = self._panel_pose()
-        rotation = matrix_from_quat(panel_pose[3:7].reshape(1, 4))[0]
+        quat_xyzw = panel_pose[[4, 5, 6, 3]]
+        rotation = matrix_from_quat(quat_xyzw.reshape(1, 4))[0]
         local = torch.tensor((HANDLE_LOCAL_X, 0.0, HANDLE_LOCAL_Z), device=panel_pose.device, dtype=panel_pose.dtype)
         return panel_pose[:3] + rotation @ local
 
@@ -651,11 +648,19 @@ class DualFrankaAutoOps:
         target = torch.tensor((
             self.hang_position[0] + HANDLE_LOCAL_Z,
             self.hang_position[1],
-            self.hang_position[2] + abs(HANDLE_LOCAL_X),
+            self.hang_position[2] + abs(HANDLE_LOCAL_X) + HANDLE_RING_RADIUS,
         ), device=self.left.robot.device, dtype=torch.float32)
         if above:
             target[2] += HANG_NAIL_CLEARANCE
         return target
+
+    def _hang_panel_target(self):
+        """Panel root target whose upper handle-ring centre intersects the nail."""
+        return torch.tensor((
+            self.hang_position[0],
+            self.hang_position[1],
+            self.hang_position[2] + HANDLE_RING_RADIUS,
+        ), device=self.left.robot.device, dtype=torch.float32)
 
     def _event(self, name, **values):
         values.setdefault("task_module", self.active_module.name)
@@ -938,8 +943,6 @@ class DualFrankaAutoOps:
             hand_pos, hand_quat = combine_frame_transforms(
                 panel_pos, panel_quat, offset_pos, offset_quat
             )
-            if rotate_grasp:
-                hand_pos[0] = hand_pos[0] + self._grasp_slip_correction(name, arm)
             arm.set_task_costs(100.0, 80.0)
             arm.set_target(hand_pos[0], hand_quat[0])
             arm.close_step()
@@ -2004,7 +2007,7 @@ class DualFrankaAutoOps:
                 ),
                 device=device,
             )
-            self._drive_panel_pose(position, self._vertical_quat(0.92 * smooth), rotate_grasp=True)
+            self._drive_panel_pose(position, self._vertical_quat((89.0 / 90.0) * smooth), rotate_grasp=True)
             if fraction >= 1.0:
                 live_vertical_pose = self._panel_pose()
                 live_rotation = matrix_from_quat(live_vertical_pose[3:7].reshape(1, 4))[0]
@@ -2022,14 +2025,28 @@ class DualFrankaAutoOps:
                     self._grasp_width_valid(self.left, 0.010, 0.052)
                     and self._grasp_width_valid(self.right, 0.010, 0.052)
                 )
-                if vertical_axis_alignment >= 0.90 and panel_bottom_z >= rack_clearance_z and grasp_held:
+                # Rack/floor contact after rotation is recoverable while both
+                # grippers still hold the nearly vertical panel.  The following
+                # leveling and nail-height stages lift it clear again, so bottom
+                # height is diagnostic rather than a phase-blocking condition.
+                if vertical_axis_alignment >= 0.90 and grasp_held:
                     self._event(
                         "physical_panel_lift_verified",
                         panel_height=float(live_vertical_pose[2].item()),
                         panel_bottom_height=panel_bottom_z,
+                        rack_clearance_height=rack_clearance_z,
+                        bottom_contact_recoverable=panel_bottom_z < rack_clearance_z,
                         vertical_axis_alignment=vertical_axis_alignment,
                     )
+                    # Cancel the last rotation convergence target before the physics step.
+                    # Hold the measured EE poses for one tick, then phase 6 sends X transport.
+                    for arm in (self.left, self.right):
+                        measured = arm.pose_w()[0].clone()
+                        arm.set_target(measured[:3], measured[3:7])
+                        arm.close_step()
                     self._transition(6, "panel_lifted_with_grasp_held_rotation_acceptable")
+                    self.post_rotation_level_position = live_vertical_pose[:3].clone()
+                    self._begin_stage(-1, "post_rotation_bimanual_leveling_started")
                 else:
                     self._fail(
                         "physical_panel_lift_not_detected",
@@ -2042,103 +2059,160 @@ class DualFrankaAutoOps:
 
         elif self.phase_index == 6:
             if self.stage == -1:
-                # Do not rewrite either EE target here. ``apply`` keeps sending
-                # the final lift joint targets and constant grip effort, so the
-                # physical hold remains unchanged across the task boundary.
+                # Preserve the successful physical grasp exactly as measured at
+                # the end of rotation. Replaying an ideal object transform here
+                # separated both fingers from the compliant panel.
+                self.left.close_step()
+                self.right.close_step()
+                live_level_pose = self._panel_pose()
+                quat_xyzw = live_level_pose[[4, 5, 6, 3]]
+                live_level_rotation = matrix_from_quat(quat_xyzw.reshape(1, 4))[0]
+                edge_level_error = abs(float(live_level_rotation[2, 1].item()))
                 if self._stage_elapsed() >= 2:
-                    self._begin_stage(0, "lift_hold_stabilized_for_hang")
+                    self._event(
+                        "post_rotation_bimanual_leveling_completed",
+                        panel_edge_level_error=edge_level_error,
+                        panel_top_edge_world=live_level_rotation[:, 1].detach().cpu().tolist(),
+                        panel_long_axis_world=live_level_rotation[:, 0].detach().cpu().tolist(),
+                    )
+                    self.waypoint_start = None
+                    self._begin_stage(0, "leveled_panel_ready_for_nail_height")
                 return
 
             if self.stage == 0:
-                # First rise vertically on the robot side of the nail. The ring
-                # top is now above the nail before any X motion can collide.
+                # Move only in Z, but gate on the live ring centre rather than
+                # elapsed trajectory time.  Compliant grasp slip can otherwise
+                # leave the ring far below the nail while the hands finish.
                 if self.waypoint_start is None:
                     self.waypoint_start = (
-                        panel_pose[:3].clone(), self._hang_transport_quat().clone()
+                        panel_pose[:3].clone(), self._vertical_quat(89.0 / 90.0)
                     )
                     self.hang_hand_waypoint_start = {
                         "left": self.left.pose_w()[0].clone(),
                         "right": self.right.pose_w()[0].clone(),
                     }
-                    # The entry is relative to the live rotated panel and can
-                    # therefore never command a downward "raise".
-                    self.hang_entry_z = max(
-                        self.hang_entry_z,
-                        float(self.waypoint_start[0][2].item()) + HANG_NAIL_CLEARANCE,
-                    )
-                    self.hang_panel_goal = panel_pose[:3].clone()
-                    self.hang_panel_goal[2] += (
-                        self._ring_target_world(above=True)[2] - self._ring_center_world(panel_pose)[2]
-                    )
-                raise_goal = self.hang_panel_goal
-                duration = max(self._duration(45), 18)
+                    self.hang_ring_start = self._ring_center_world(panel_pose).clone()
+                    self.hang_ring_goal = self.hang_ring_start.clone()
+                    self.hang_ring_goal[2] = self._ring_target_world()[2]
+                    self.hang_hand_correction = torch.zeros(3, device=device)
+                duration = max(self._duration(15), 6)
                 fraction = min(1.0, self._stage_elapsed() / duration)
                 smooth = fraction * fraction * (3.0 - 2.0 * fraction)
-                delta = (raise_goal - self.waypoint_start[0]) * smooth
+                planned_delta = (self.hang_ring_goal - self.hang_ring_start) * smooth
+                ring_error = self._ring_center_world(panel_pose) - self._ring_target_world()
+                if fraction >= 1.0:
+                    self.hang_hand_correction -= torch.clamp(ring_error, -0.010, 0.010)
+                    self.hang_hand_correction[0:2] = 0.0
+                    self.hang_hand_correction = torch.clamp(
+                        self.hang_hand_correction, -0.030, 0.030
+                    )
                 for name, arm in (("left", self.left), ("right", self.right)):
                     start = self.hang_hand_waypoint_start[name]
                     arm.set_target(
-                    start[:3] + delta + self._grasp_slip_correction(name, arm),
-                    start[3:7],
-                )
+                        start[:3] + planned_delta + self.hang_hand_correction,
+                        start[3:7],
+                    )
                     arm.close_step()
-                if fraction >= 1.0 and float(self._ring_center_world(panel_pose)[2].item()) >= float(self._ring_target_world(above=True)[2].item()) - 0.02:
+                if fraction >= 1.0 and abs(float(ring_error[2].item())) <= HANDLE_RING_RADIUS - 0.015:
                     self.waypoint_start = (
-                        panel_pose[:3].clone(), self._hang_transport_quat().clone()
+                        panel_pose[:3].clone(), self._vertical_quat(89.0 / 90.0)
                     )
                     self.hang_hand_waypoint_start = {
                         "left": self.left.pose_w()[0].clone(),
                         "right": self.right.pose_w()[0].clone(),
                     }
-                    self.hang_panel_goal = panel_pose[:3].clone() + (
-                        self._ring_target_world(above=True) - self._ring_center_world(panel_pose)
+                    self.hang_ring_start = self._ring_center_world(panel_pose).clone()
+                    self.hang_ring_goal = self._ring_target_world().clone()
+                    self.hang_hand_correction = torch.zeros(3, device=device)
+                    self._begin_stage(1, "nail_height_completed_direct_x_transport")
+                elif self._stage_elapsed() >= max(self._duration(90), 30):
+                    self._fail(
+                        "ring_nail_height_not_reached",
+                        ring_center=self._ring_center_world(panel_pose).detach().cpu().tolist(),
+                        ring_target=self._ring_target_world().detach().cpu().tolist(),
+                        vertical_error=float(ring_error[2].item()),
                     )
-                    self._begin_stage(1, "ring_raised_above_nail_in_front")
                 return
 
             # Then translate along X at the cleared height until the ring is
             # directly above the nail. Y remains nail-centred throughout.
-            goal = self.hang_panel_goal
-            duration = max(self._duration(75), 25)
+            duration = max(self._duration(36), 12)
             fraction = min(1.0, self._stage_elapsed() / duration)
             smooth = fraction * fraction * (3.0 - 2.0 * fraction)
-            delta = (goal - self.waypoint_start[0]) * smooth
+            planned_delta = (self.hang_ring_goal - self.hang_ring_start) * smooth
+            ring_error = self._ring_center_world(panel_pose) - self._ring_target_world()
+            if fraction >= 1.0:
+                self.hang_hand_correction -= torch.clamp(ring_error, -0.010, 0.010)
+                self.hang_hand_correction = torch.clamp(
+                    self.hang_hand_correction, -0.030, 0.030
+                )
             for name, arm in (("left", self.left), ("right", self.right)):
                 start = self.hang_hand_waypoint_start[name]
                 arm.set_target(
-                    start[:3] + delta + self._grasp_slip_correction(name, arm),
+                    start[:3] + planned_delta + self.hang_hand_correction,
                     start[3:7],
                 )
                 arm.close_step()
-            if fraction >= 1.0:
-                self._transition(7, "panel_positioned_above_hooks")
+            radial_error = torch.sqrt(ring_error[1] ** 2 + ring_error[2] ** 2)
+            ring_aligned = (
+                abs(float(ring_error[0].item())) <= 0.070
+                and float(radial_error.item()) <= HANDLE_RING_RADIUS - 0.015
+            )
+            if fraction >= 1.0 and ring_aligned:
+                self._transition(7, "panel_ring_center_positioned_at_nail")
+            elif self._stage_elapsed() >= max(self._duration(90), 30):
+                self._fail(
+                    "ring_3d_alignment_not_reached",
+                    ring_center=self._ring_center_world(panel_pose).detach().cpu().tolist(),
+                    ring_target=self._ring_target_world().detach().cpu().tolist(),
+                    ring_error=ring_error.detach().cpu().tolist(),
+                )
 
         elif self.phase_index == 7:
-            # Keep the last phase-6 wrist targets unchanged while contacts settle.
-            ring_error = self._ring_center_world(panel_pose) - self._ring_target_world(above=True)
-            settled = float(torch.linalg.norm(ring_error).item()) <= 0.05
-            if self._stage_elapsed() >= max(self._duration(45), 18):
-                if settled:
-                    self._transition(8, "panel_top_rail_aligned_above_hooks")
-                else:
-                    self._fail("panel_alignment_above_hooks_not_reached", panel_x=px, panel_y=py)
+            # Continue holding the shared object target and release only when
+            # the live 3-D ring centre actually encloses the nail location.
+            self.left.close_step()
+            self.right.close_step()
+            ring_center = self._ring_center_world(panel_pose)
+            ring_target = self._ring_target_world()
+            ring_error = ring_center - ring_target
+            radial_error = torch.sqrt(ring_error[1] ** 2 + ring_error[2] ** 2)
+            settled = (
+                abs(float(ring_error[0].item())) <= 0.070
+                and float(radial_error.item()) <= HANDLE_RING_RADIUS - 0.015
+            )
+            if settled:
+                    self._event(
+                        "ring_fully_over_nail",
+                        panel_height=pz,
+                        ring_center=ring_center.detach().cpu().tolist(),
+                        ring_target=ring_target.detach().cpu().tolist(),
+                        insertion_error=abs(float(ring_error[0].item())),
+                        lateral_error=abs(float(ring_error[1].item())),
+                        vertical_error=abs(float(ring_error[2].item())),
+                        radial_error=float(radial_error.item()),
+                        contact_required=False,
+                    )
+                    self.release_panel_height = pz
+                    self._transition(9, "nail_inside_ring_release_allowed")
+            elif self._stage_elapsed() >= max(self._duration(45), 18):
+                self._fail(
+                    "panel_alignment_above_hooks_not_reached",
+                    ring_center=ring_center.detach().cpu().tolist(),
+                    ring_target=ring_target.detach().cpu().tolist(),
+                    ring_error=ring_error.detach().cpu().tolist(),
+                )
 
         elif self.phase_index == 8:
             if self.stage == 0:
-                self.hang_entry_panel_goal = panel_pose[:3].clone() + (
-                    self._ring_target_world(above=True) - self._ring_center_world(panel_pose)
-                )
-                self.hang_seat_panel_goal = panel_pose[:3].clone() + (
-                    self._ring_target_world(above=False) - self._ring_center_world(panel_pose)
-                )
+                self.hang_entry_panel_goal = self._hang_panel_target()
+                self.hang_seat_panel_goal = self._hang_panel_target()
                 self._begin_waypoint(1, "lowering_onto_hooks", self.hang_entry_panel_goal, self._hang_transport_quat())
                 self.hang_hand_waypoint_start = {
                     "left": self.left.pose_w()[0].clone(),
                     "right": self.right.pose_w()[0].clone(),
                 }
             duration = max(self._duration(60), 25)
-            entry = self.hang_entry_panel_goal
-            seat = self.hang_seat_panel_goal
             entry = self.hang_entry_panel_goal
             seat = self.hang_seat_panel_goal
             fraction = min(1.0, self._stage_elapsed() / duration)
@@ -2156,15 +2230,14 @@ class DualFrankaAutoOps:
                 # Release only after the nail is geometrically inside the ring:
                 # X is insertion along the nail shaft, while Y and Z constrain
                 # the ring bore around the shaft and below its supporting point.
-                live_ring = self._ring_center_world(panel_pose)
-                target_ring = self._ring_target_world(above=False)
-                insertion_error = abs(float((live_ring[0] - target_ring[0]).item()))
-                lateral_error = abs(float((live_ring[1] - target_ring[1]).item()))
-                seating_error = float((live_ring[2] - target_ring[2]).item())
+                target_panel = self._hang_panel_target()
+                insertion_error = abs(px - float(target_panel[0].item()))
+                lateral_error = abs(py - float(target_panel[1].item()))
+                seating_error = pz - float(target_panel[2].item())
                 ring_fully_over_nail = (
                     insertion_error <= 0.050
                     and lateral_error <= 0.040
-                    and -0.030 <= seating_error <= 0.035
+                    and -0.080 <= seating_error <= 0.035
                 )
                 if ring_fully_over_nail:
                     self._event(
@@ -2188,7 +2261,7 @@ class DualFrankaAutoOps:
             self.left.release_gripper()
             self.right.release_gripper()
             opened = min(self.left.measured_gripper_width(), self.right.measured_gripper_width())
-            if self._stage_elapsed() >= max(self._duration(35), 18) and opened >= 0.055:
+            if self._stage_elapsed() >= max(self._duration(8), 4) and opened >= 0.075:
                 for name, arm in (("left", self.left), ("right", self.right)):
                     self.release_hand_pose[name] = arm.pose_w()[0].clone()
                 self._transition(10, "grippers_released_panel")
@@ -2196,34 +2269,31 @@ class DualFrankaAutoOps:
                 self._fail("grippers_did_not_open_for_release", opened_width=opened)
 
         elif self.phase_index == 10:
-            # Never sweep sideways while the fingers are still level with the
-            # hanging panel.  Keep both jaws fully open, lift vertically clear of
-            # the panel first, then retreat in X/Y.
-            lift_clearance = 0.18
+            # After release, clear only along the panel-side Y directions and
+            # finish.  An additional X retreat can sweep the open fingers back
+            # through the hanging panel and knock it off the nail.
+            lateral_clearance = 0.12
+            lateral_duration = max(self._duration(12), 6)
             if self.stage == 0:
-                ready = True
-                for name, arm in (("left", self.left), ("right", self.right)):
-                    start = self.release_hand_pose[name]
-                    target = start[:3].clone()
-                    target[2] += lift_clearance
-                    arm.set_target(target, start[3:7])
-                    arm.set_gripper(GRIPPER_OPEN_WIDTH)
-                    ready = ready and self._pose_ready(arm, 0.035, 0.10)
-                if ready:
-                    self._begin_stage(1, "hands_lifted_clear_of_hanging_panel")
-            else:
-                retreat_duration = max(self._duration(30), 15)
-                fraction = min(1.0, self._stage_elapsed() / retreat_duration)
-                smooth = fraction
+                fraction = min(1.0, self._stage_elapsed() / lateral_duration)
+                smooth = fraction * fraction * (3.0 - 2.0 * fraction)
                 for name, arm, sign in (("left", self.left, 1.0), ("right", self.right, -1.0)):
                     start = self.release_hand_pose[name]
                     target = start[:3].clone()
-                    target[2] += lift_clearance
-                    target[0] -= 0.18 * smooth
-                    target[1] += sign * 0.10 * smooth
+                    target[1] += sign * lateral_clearance * smooth
                     arm.set_target(target, start[3:7])
                     arm.set_gripper(GRIPPER_OPEN_WIDTH)
-                if fraction >= 1.0 and self._stage_elapsed() >= retreat_duration + max(self._duration(20), 10):
+                if fraction >= 1.0:
+                    self._event("hands_cleared_panel_laterally")
+                    self._begin_stage(1, "released_panel_physics_settle_started")
+            else:
+                for name, arm, sign in (("left", self.left, 1.0), ("right", self.right, -1.0)):
+                    start = self.release_hand_pose[name]
+                    target = start[:3].clone()
+                    target[1] += sign * lateral_clearance
+                    arm.set_target(target, start[3:7])
+                    arm.set_gripper(GRIPPER_OPEN_WIDTH)
+                if self._stage_elapsed() >= max(self._duration(24), 12):
                     self._finish_episode(panel_pose)
 
         if self.total_control_ticks % 30 == 0:
@@ -2255,16 +2325,34 @@ class DualFrankaAutoOps:
         orientation_error = float(torch.acos(vertical_axis_alignment).item())
         px, py, pz = (float(value.item()) for value in panel_pose[:3])
         supported = self._newton_contact_flags()["panel_hanger"]
-        # A released panel that is still at hanging height and not descending is
-        # held by the hooks whatever the contact-name reporting says.
+        # Contact-name reporting can be incomplete, but the nail must still lie
+        # geometrically inside the released ring.  Height retention alone can
+        # incorrectly accept a panel that fell below the hanger.
+        ring_center = self._ring_center_world(panel_pose)
+        ring_target = self._ring_target_world()
+        ring_error = ring_center - ring_target
+        insertion_error = abs(float(ring_error[0].item()))
+        radial_error = math.sqrt(
+            float(ring_error[1].item()) ** 2 + float(ring_error[2].item()) ** 2
+        )
+        nail_tip_x = float(ring_target[0].item())
+        nail_base_x = nail_tip_x - HANGER_NAIL_LENGTH
+        ring_plane_x = float(ring_center[0].item())
+        ring_on_nail_shaft = (
+            nail_base_x - 0.010 <= ring_plane_x <= nail_tip_x + 0.010
+        )
+        nail_inside_ring = (
+            ring_on_nail_shaft
+            and radial_error <= HANDLE_RING_RADIUS + 0.015
+        )
         heights = list(self.panel_height_history)
         stationary = len(heights) < 2 or (max(heights) - min(heights)) <= 0.01
-        placed = (
-            abs(px - self.hang_position[0]) <= 0.10
-            and abs(py - self.hang_position[1]) <= 0.10
-            and self.hang_position[2] - 0.06 <= pz <= self.hang_position[2] + 0.10
-        )
-        if placed and stationary and orientation_error <= 0.40:
+        release_height = getattr(self, "release_panel_height", pz)
+        retained_height = pz >= release_height - 0.05
+        panel_bottom_height = pz - PANEL_HALF_LENGTH
+        suspended = panel_bottom_height >= float(self.initial_panel_pos[2].item()) + 0.020
+        placed = nail_inside_ring and suspended
+        if placed and float(vertical_axis_alignment.item()) >= 0.85:
             self.success = True
             self.failure_reason = None
             self.done = True
@@ -2274,6 +2362,19 @@ class DualFrankaAutoOps:
                 panel_pose=panel_pose.detach().cpu().tolist(),
                 orientation_error=orientation_error,
                 vertical_axis_alignment=float(vertical_axis_alignment.item()),
+                release_height=release_height,
+                retained_height=retained_height,
+                panel_bottom_height=panel_bottom_height,
+                suspended=suspended,
+                stationary=stationary,
+                ring_center=ring_center.detach().cpu().tolist(),
+                ring_target=ring_target.detach().cpu().tolist(),
+                ring_insertion_error=insertion_error,
+                ring_radial_error=radial_error,
+                nail_base_x=nail_base_x,
+                nail_tip_x=nail_tip_x,
+                ring_on_nail_shaft=ring_on_nail_shaft,
+                nail_inside_ring=nail_inside_ring,
                 panel_hanger_contact=supported,
                 failure_reason=None,
             )
@@ -2283,6 +2384,17 @@ class DualFrankaAutoOps:
                 panel_hanger_contact=supported,
                 placed=placed,
                 stationary=stationary,
+                retained_height=retained_height,
+                panel_bottom_height=panel_bottom_height,
+                suspended=suspended,
+                ring_center=ring_center.detach().cpu().tolist(),
+                ring_target=ring_target.detach().cpu().tolist(),
+                ring_insertion_error=insertion_error,
+                ring_radial_error=radial_error,
+                nail_base_x=nail_base_x,
+                nail_tip_x=nail_tip_x,
+                ring_on_nail_shaft=ring_on_nail_shaft,
+                nail_inside_ring=nail_inside_ring,
                 orientation_error=orientation_error,
                 vertical_axis_alignment=float(vertical_axis_alignment.item()),
             )
@@ -2387,6 +2499,15 @@ class DualFrankaAutoOps:
             )
 
     def apply(self, physics_step):
+        finite_state = (
+            torch.isfinite(self.panel.data.root_pose_w.torch).all()
+            and torch.isfinite(self.left.robot.data.joint_pos.torch).all()
+            and torch.isfinite(self.right.robot.data.joint_pos.torch).all()
+        )
+        if not bool(finite_state.item()):
+            if not self.done:
+                self._fail("non_finite_newton_state")
+            return
         if physics_step % self.control_decimation == 0:
             self.high_level_tick()
         solve_ik = physics_step % 2 == 0

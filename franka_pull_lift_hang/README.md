@@ -40,6 +40,28 @@ For local-only viewing, set `ISAACSIM_HOST=127.0.0.1`. WebRTC has no built-in au
 bash franka_pull_lift_hang/run_web.sh
 ```
 
+For the canonical Hang AutoOps viewer, always use the dedicated launcher:
+
+```bash
+bash franka_pull_lift_hang/run_hang_viser.sh
+```
+
+This launcher is the single source of truth for Hang visualization. It stops
+only stale instances of this scene, starts exactly one process, clears
+`DISPLAY` for headless Isaac Sim startup, keeps Viser on port `8080`, disables
+RTX task cameras for real-time debug speed, and launches `--auto-ops-task hang`. Do not use an
+ad-hoc `docker exec` command for this workflow; differing flags can produce a
+blank or stale viewer after a container restart.
+
+Enable the camera preview explicitly when it is needed:
+
+```bash
+ENABLE_CAMERA_PREVIEW=1 bash franka_pull_lift_hang/run_hang_viser.sh
+```
+
+`--camera-preview` and `--disable-task-cameras` are mutually exclusive. The
+launcher selects exactly one mode and never passes both flags.
+
 Open `http://localhost:8080` for the free scene view and
 `http://localhost:8081` for the three-camera view (left wrist, right wrist and
 hanger front). Replace `localhost` with `SERVER_IP` for a remote machine. For
