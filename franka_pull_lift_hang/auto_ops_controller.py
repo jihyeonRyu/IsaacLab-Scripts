@@ -206,6 +206,9 @@ PANEL_PULL_MINIMUM = 0.325
 PULL_LATERAL_FEEDBACK_GAIN = 0.60
 PULL_LATERAL_CORRECTION_LIMIT = 0.10
 PULL_CENTER_TOLERANCE = 0.060
+PULL_LATERAL_VELOCITY_GAIN = 0.18
+PULL_RELEASE_MAX_LATERAL_SPEED = 0.08
+PULL_RELEASE_MAX_YAW_RATE = 0.35
 # How far the hand may steer sideways while cancelling panel yaw.
 PANEL_PULL_YAW_LIMIT = 0.0
 PULL_RAIL_CENTER_Y = 0.0
@@ -1754,6 +1757,9 @@ class DualFrankaAutoOps:
                 self._fail("handle_contact_not_established", left_gripper_width=width)
 
     def _step_phase_2(self, panel_pose, px, py, pz, device):
+        panel_velocity = self.panel.data.root_com_vel_w.torch[0]
+        panel_vy = float(panel_velocity[1].item())
+        panel_yaw_rate = float(panel_velocity[5].item())
         pull_duration = max(self._duration(20), 15)
         fraction = min(1.0, self.phase_ticks / pull_duration)
         smooth = fraction * fraction * (3.0 - 2.0 * fraction)
@@ -1764,7 +1770,11 @@ class DualFrankaAutoOps:
         # centred for three control ticks, not merely cross the threshold.
         lateral_feedback = max(
             -PULL_LATERAL_CORRECTION_LIMIT,
-            min(PULL_LATERAL_CORRECTION_LIMIT, PULL_LATERAL_FEEDBACK_GAIN * py),
+            min(
+                PULL_LATERAL_CORRECTION_LIMIT,
+                PULL_LATERAL_FEEDBACK_GAIN * py
+                + PULL_LATERAL_VELOCITY_GAIN * panel_vy,
+            ),
         )
         target[1] = (
             self.pull_start_pose[1] * (1.0 - smooth)
@@ -1817,6 +1827,8 @@ class DualFrankaAutoOps:
             total_pulled_distance >= PANEL_PULL_MINIMUM
             and phase_pull_distance >= required_phase_pull
             and abs(py) <= PULL_CENTER_TOLERANCE
+            and abs(panel_vy) <= PULL_RELEASE_MAX_LATERAL_SPEED
+            and abs(panel_yaw_rate) <= PULL_RELEASE_MAX_YAW_RATE
         )
         self.pull_success_stable_ticks = (
             self.pull_success_stable_ticks + 1 if pull_physically_ready else 0
@@ -1831,6 +1843,8 @@ class DualFrankaAutoOps:
                 pulled_distance=total_pulled_distance,
                 phase_pull_distance=phase_pull_distance,
                 panel_lateral_offset=py,
+                panel_lateral_speed=panel_vy,
+                panel_yaw_rate=panel_yaw_rate,
             )
             self.retreat_start_pose = self.left.pose_w()[0].clone()
             self.retreat_start_finger_midpoint = self.left.finger_centers_w().mean(dim=0).clone()
@@ -1842,6 +1856,8 @@ class DualFrankaAutoOps:
                 pulled_distance=total_pulled_distance,
                 phase_pull_distance=phase_pull_distance,
                 panel_lateral_offset=py,
+                panel_lateral_speed=panel_vy,
+                panel_yaw_rate=panel_yaw_rate,
             )
 
     def _step_phase_3(self, panel_pose, px, py, pz, device):
