@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import colorsys
+import faulthandler
 import json
 import math
 import random
+import signal
 import traceback
 from pathlib import Path
 
@@ -93,7 +95,7 @@ from isaaclab_newton.physics import MJWarpSolverCfg, NewtonCfg  # noqa: E402
 from isaaclab_newton.sim.schemas import NewtonMaterialPropertiesCfg  # noqa: E402
 from auto_ops_controller import (
     GRIPPER_MAX_WIDTH, PANEL_HALF_LENGTH, PANEL_PULL_DISTANCE,
-    RACK_COVER_FRONT_X, RACK_ROTATION_CLEARANCE_X, TASK_MODULES, DualFrankaAutoOps,
+    RACK_COVER_FRONT_X, RACK_ROTATION_CLEARANCE_X, DualFrankaAutoOps,
 )  # noqa: E402
 from async_sensor_writer import AsyncSensorWriter  # noqa: E402
 from camera_preview_server import CameraPreviewServer  # noqa: E402
@@ -178,6 +180,12 @@ _S_HOOK_YAW_SCALE = math.cos(math.radians(S_HOOK_YAW_DEGREES))
 # top rail drops over them exactly like a picture frame over a pair of wall nails.
 NAIL_RADIUS = 0.009
 NAIL_LENGTH = 0.090
+# Short coaxial cap at the exposed -X end, like a real nail head.  The +X end
+# is embedded in the hanger rod; the robots and panel approach from -X.
+# small enough to pass through the picture-ring opening during insertion but
+# large enough to catch its steel bar if the released panel slides toward +X.
+NAIL_HEAD_RADIUS = 0.040
+NAIL_HEAD_THICKNESS = 0.024
 NAIL_Y = 0.15
 NAIL_HEAD_X = HANGER_ROD_X
 HANGER_SHELF_FRONT_X = HANGER_ROD_X - NAIL_LENGTH
@@ -849,9 +857,17 @@ def harden_contacts():
             jnt_solimp = model.jnt_solimp.numpy()
             jnt_solref = model.jnt_solref.numpy()
             jnt_margin = model.jnt_margin.numpy()
+            jnt_range = model.jnt_range.numpy() if hasattr(model, "jnt_range") else None
+            jnt_limited = model.jnt_limited.numpy() if hasattr(model, "jnt_limited") else None
             joint_solimp = jnt_solimp[0] if jnt_solimp.ndim == 3 else jnt_solimp
             joint_solref = jnt_solref[0] if jnt_solref.ndim == 3 else jnt_solref
             joint_margin = jnt_margin[0] if jnt_margin.ndim == 2 else jnt_margin
+            joint_range = (
+                jnt_range[0] if jnt_range is not None and jnt_range.ndim == 3 else jnt_range
+            )
+            joint_limited = (
+                jnt_limited[0] if jnt_limited is not None and jnt_limited.ndim == 2 else jnt_limited
+            )
             for joint_index in range(int(solver.mj_model.njnt)):
                 joint_name = mujoco.mj_id2name(
                     solver.mj_model, mujoco.mjtObj.mjOBJ_JOINT, joint_index
@@ -863,10 +879,20 @@ def harden_contacts():
                     joint_solref[joint_index, 0] = 0.008
                     joint_solref[joint_index, 1] = 2.0
                     joint_margin[joint_index] = 0.001
+                    if joint_range is not None:
+                        joint_range[joint_index, :] = (0.0, 0.040)
+                    if joint_limited is not None:
+                        joint_limited[joint_index] = 1
                     hardened_joint_ids.append(joint_index)
             model.jnt_solimp = wp.array(jnt_solimp, dtype=model.jnt_solimp.dtype, device=model.jnt_solimp.device)
             model.jnt_solref = wp.array(jnt_solref, dtype=model.jnt_solref.dtype, device=model.jnt_solref.device)
             model.jnt_margin = wp.array(jnt_margin, dtype=model.jnt_margin.dtype, device=model.jnt_margin.device)
+            if jnt_range is not None:
+                model.jnt_range = wp.array(jnt_range, dtype=model.jnt_range.dtype, device=model.jnt_range.device)
+            if jnt_limited is not None:
+                model.jnt_limited = wp.array(
+                    jnt_limited, dtype=model.jnt_limited.dtype, device=model.jnt_limited.device
+                )
         print(
             f"[INFO] thin_grasp_constraints_hardened geoms={hardened_geom_ids} "
             f"finger_joints={hardened_joint_ids} collision_masks={collision_masks_applied}", flush=True
@@ -1038,25 +1064,47 @@ def spawn_hanging_nails(stage):
         UsdPhysics.CollisionAPI.Apply(nail.GetPrim())
         sim_utils.bind_physics_material(nail_path, HIGH_HANG_MATERIAL_PATH, stage=stage)
 
+        head_path = f"/World/HangerStand/Nails/Nail{index}Head"
+        head = UsdGeom.Cylinder.Define(stage, head_path)
+        head.CreateAxisAttr("Z")
+        head.CreateRadiusAttr(NAIL_HEAD_RADIUS)
+        head.CreateHeightAttr(NAIL_HEAD_THICKNESS)
+        head.AddTranslateOp().Set(Gf.Vec3d(
+            NAIL_HEAD_X - NAIL_LENGTH - 0.5 * NAIL_HEAD_THICKNESS,
+            y_pos,
+            HANGER_ROD_Z,
+        ))
+        head.AddRotateYOp().Set(90.0)
+        head.CreateDisplayColorAttr([Gf.Vec3f(*steel)])
+        UsdPhysics.CollisionAPI.Apply(head.GetPrim())
+        sim_utils.bind_physics_material(head_path, HIGH_HANG_MATERIAL_PATH, stage=stage)
+
 
 def resolve_hanger_target_from_stage():
     """Resolve the hang target from the authored nail prim, not scene constants."""
     stage = sim_utils.get_current_stage()
     nail_prim = stage.GetPrimAtPath("/World/HangerStand/Nails/Nail0")
+    head_prim = stage.GetPrimAtPath("/World/HangerStand/Nails/Nail0Head")
     if not nail_prim or not nail_prim.IsValid():
         raise RuntimeError("Hanger nail prim is missing; cannot resolve a physical hang target")
+    if not head_prim or not head_prim.IsValid():
+        raise RuntimeError("Hanger nail-head prim is missing; cannot resolve a physical hang target")
     cache = UsdGeom.XformCache()
     nail_world = cache.GetLocalToWorldTransform(nail_prim).ExtractTranslation()
-    # The nail's local +Z axis is rotated into world +X.  Use its actual tip
-    # position as the anchor; only panel geometry offsets remain below.
-    nail_tip_x = float(nail_world[0]) + 0.5 * NAIL_LENGTH
+    head_world = cache.GetLocalToWorldTransform(head_prim).ExtractTranslation()
+    # Resolve both insertion depth and height from the actual collision head.
+    # This remains correct when the hanger is moved or its height randomized.
+    # The exposed face points toward -X; +X is the hanger-rod side.
+    nail_head_front_x = float(head_world[0]) - 0.5 * NAIL_HEAD_THICKNESS
     hang_position = (
-        nail_tip_x - HANDLE_LOCAL_Z,
+        nail_head_front_x - HANDLE_LOCAL_Z,
         float(nail_world[1]),
-        float(nail_world[2]) - (abs(HANDLE_LOCAL_X) + RING_RADIUS),
+        float(head_world[2]) - (abs(HANDLE_LOCAL_X) + RING_RADIUS),
     )
     print(
         f"[INFO] hanger_target_from_nail nail=({float(nail_world[0]):.4f},{float(nail_world[1]):.4f},{float(nail_world[2]):.4f}) "
+        f"head=({float(head_world[0]):.4f},{float(head_world[1]):.4f},{float(head_world[2]):.4f}) "
+        f"head_front_x={nail_head_front_x:.4f} "
         f"target=({hang_position[0]:.4f},{hang_position[1]:.4f},{hang_position[2]:.4f})",
         flush=True,
     )
@@ -1190,13 +1238,14 @@ def design_scene(panel_state):
     spawn_static_box(
         "/World/PanelRack/RearTopStop",
         # Side guards span y=[-0.58, 0.58]; this width meets both outer faces.
-        (0.30, 1.16, 0.025),
+        (0.18, 1.16, 0.025),
         # Keep it over the rear tip but above the grasp envelope; the panel is
         # free to translate/lift below this clearance once it leaves the rack.
         # Side guards top out at z=0.620; seat the 25 mm cover directly on them.
-        # The rear wall front face is x=0.69; with a 0.30 m cover this
-        # centre places the cover's rear edge directly against that wall.
-        (0.54, 0.0, 0.6325),
+        # The rear wall front face is x=0.69. Keep that edge touching the wall
+        # while shortening the cover to x=[0.51, 0.69], leaving 120 mm more
+        # clearance for the bimanual lift and hang trajectory.
+        (0.60, 0.0, 0.6325),
         (0.30, 0.32, 0.35),
         physics_material_path=LOW_SLIDE_MATERIAL_PATH,
     )
@@ -1299,7 +1348,60 @@ def set_standalone_panel_start(panel, task_mode):
     panel.reset()
 
 
+def log_grounding_anchor_history(sim, auto_ops, episode_time_s):
+    """Append measured object-relative anchors to the live Viser plots.
+
+    Viser's live scene nodes only retain their latest transform.  These scalar
+    buffers preserve the measured panel, ring, nail, and end-effector anchors
+    across the episode so selecting a previous plot step shows real data rather
+    than a single overwritten sample.
+    """
+    if auto_ops is None:
+        return False
+    panel_pose = auto_ops._panel_pose()
+    ring = auto_ops._ring_center_world(panel_pose)
+    nail = auto_ops._ring_target_world()
+    left_ee = auto_ops.left.pose_w()[0, :3]
+    right_ee = auto_ops.right.pose_w()[0, :3]
+    ring_error = ring - nail
+    radial_error = torch.linalg.vector_norm(ring_error[1:3])
+    prefix = "Measured grounding anchors over episode time"
+    samples = {
+        f"{prefix}/episode_time_s": episode_time_s,
+        f"{prefix}/panel_x_m": panel_pose[0],
+        f"{prefix}/panel_y_m": panel_pose[1],
+        f"{prefix}/panel_z_m": panel_pose[2],
+        f"{prefix}/ring_x_m": ring[0],
+        f"{prefix}/ring_y_m": ring[1],
+        f"{prefix}/ring_z_m": ring[2],
+        f"{prefix}/nail_x_m": nail[0],
+        f"{prefix}/nail_y_m": nail[1],
+        f"{prefix}/nail_z_m": nail[2],
+        f"{prefix}/ring_nail_radial_error_m": radial_error,
+        f"{prefix}/left_ee_x_m": left_ee[0],
+        f"{prefix}/left_ee_y_m": left_ee[1],
+        f"{prefix}/left_ee_z_m": left_ee[2],
+        f"{prefix}/right_ee_x_m": right_ee[0],
+        f"{prefix}/right_ee_y_m": right_ee[1],
+        f"{prefix}/right_ee_z_m": right_ee[2],
+    }
+    logged = False
+    for visualizer in sim.visualizers:
+        viewer = getattr(visualizer, "_viewer", None)
+        log_scalar = getattr(viewer, "log_scalar", None)
+        if not callable(log_scalar):
+            continue
+        for name, value in samples.items():
+            log_scalar(name, value)
+        logged = True
+    return logged
+
+
 def main():
+    # SIGUSR1 writes every Python thread stack to the active simulation log.
+    # This is inert during normal runs and makes native solver stalls diagnosable
+    # without ptrace access inside the Isaac container.
+    faulthandler.register(signal.SIGUSR1, all_threads=True)
     if args_cli.physics_dt <= 0.0 or args_cli.substeps < 1 or args_cli.max_steps < 0 or args_cli.motion_speed_scale <= 0.0:
         raise ValueError("physics-dt/substeps/max-steps values are invalid")
 
@@ -1446,7 +1548,7 @@ def main():
         try:
             resolved_hang_position = resolve_hanger_target_from_stage()
             controller_task_mode = (
-                "lift" if args_cli.auto_ops_task == "hang" else args_cli.auto_ops_task
+                "lift_hang" if args_cli.auto_ops_task == "hang" else args_cli.auto_ops_task
             )
             auto_ops = DualFrankaAutoOps(
                 left_robot,
@@ -1493,7 +1595,6 @@ def main():
                 )
             # Hang begins here: the panel is horizontally lifted and physically
             # held. The first visible action is the closed-chain rotation.
-            auto_ops.active_module = TASK_MODULES["hang"]
             if args_cli.visualizer:
                 sim.render()
             # Reset annotation time only; preserve phase, stage, waypoint,
@@ -1516,6 +1617,7 @@ def main():
         preview.start()
         print(f"[INFO] camera_preview=http://0.0.0.0:{args_cli.camera_preview_port} fps={args_cli.camera_preview_fps:g}")
 
+    grounding_history_samples = 0
     while args_cli.max_steps == 0 or step < args_cli.max_steps:
         if auto_ops is not None:
             auto_ops.apply(step)
@@ -1556,6 +1658,15 @@ def main():
         left_robot.update(sim_dt)
         right_robot.update(sim_dt)
         panel.update(sim_dt)
+        if auto_ops is not None and step % args_cli.capture_every == 0:
+            if log_grounding_anchor_history(sim, auto_ops, step * sim_dt):
+                grounding_history_samples += 1
+                if grounding_history_samples == 1 or grounding_history_samples % 30 == 0:
+                    print(
+                        f"[INFO] grounding_anchor_history samples={grounding_history_samples} "
+                        f"episode_time_s={step * sim_dt:.3f}",
+                        flush=True,
+                    )
         if args_cli.newton_debug and step % 40 == 0:
             # Quaternion is reported xyzw by the Newton RigidObject backend.
             print(

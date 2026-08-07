@@ -99,6 +99,42 @@ two passive S-hook catch bars.
 
 ## Auto Ops episode
 
+### Controller modules
+
+AutoOps control is split into three physical task modules. The `long` mode is
+only an orchestrator; it does not contain a second copy of any trajectory:
+
+- `PullTaskModule`: handle approach, physical pull, gradual release, extraction,
+  and return to the shared ready pose.
+- `LiftTaskModule`: object-relative side approach, bimanual contact, lift, and
+  closed-chain rotation.
+- `HangTaskModule`: nail-relative transport, ring insertion, release, and
+  lateral hand clearance.
+
+Module ownership and contracts live in `auto_ops_modules.py`. Phase handlers
+live in `auto_ops_controller.py` as `_step_phase_0` through `_step_phase_10` and
+are dispatched only by their owning module. The previously ambiguous phase-3
+boundary is explicit: stages 0-3 belong to Pull; stage 4 onward belongs to Lift.
+
+The Pull→Lift handoff validates measured panel displacement, lateral position,
+and an opened pulling gripper. The Lift→Hang handoff validates the measured
+panel-to-hand transforms and a physical bimanual enclosure. A failed contract
+ends the episode instead of letting the next module compensate for a broken
+previous task.
+
+Run the fast ownership/contract regression tests before simulation:
+
+```bash
+PYTHONPATH=franka_pull_lift_hang \
+  python3 -m unittest franka_pull_lift_hang/test_auto_ops_modules.py -v
+```
+
+Use the canonical long viewer launcher for the complete sequence:
+
+```bash
+bash franka_pull_lift_hang/run_long_viser.sh
+```
+
 ```bash
 docker exec franka-dual-arm-hand-hang bash -lc "cd /workspace/isaaclab && \
   ./isaaclab.sh -p /workspace/IsaacLab-Scripts/franka_pull_lift_hang/dual_franka_picture_hanging_scene.py \
