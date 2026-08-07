@@ -25,7 +25,7 @@ from isaaclab.utils.math import (
 )
 
 from task_schema import pack_bimanual_action, pack_bimanual_state, phase_annotation
-from auto_ops_modules import LongTaskOrchestrator, ModuleContractError
+from task_modules import LongTaskOrchestrator, ModuleContractError
 
 # The Franka palm ends where the finger links begin, so the finger-origin plane is
 # also the palm face.  The pads live 5..54 mm beyond it; every grasp therefore parks

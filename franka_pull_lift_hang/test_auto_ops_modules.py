@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
-from auto_ops_modules import LongTaskOrchestrator, ModuleContractError
+from task_modules import LongTaskOrchestrator, ModuleContractError
 
 
 class _Scalar(float):

@@ -111,7 +111,7 @@ only an orchestrator; it does not contain a second copy of any trajectory:
 - `HangTaskModule`: nail-relative transport, ring insertion, release, and
   lateral hand clearance.
 
-Module ownership and contracts live in `auto_ops_modules.py`. Phase handlers
+Module ownership, execution boundaries, and contracts live in the `task_modules/` package. Phase handlers
 live in `auto_ops_controller.py` as `_step_phase_0` through `_step_phase_10` and
 are dispatched only by their owning module. The previously ambiguous phase-3
 boundary is explicit: stages 0-3 belong to Pull; stage 4 onward belongs to Lift.
